@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { LookupsService } from './lookups.service';
 import {
   RegisterGameDto,
@@ -7,9 +7,11 @@ import {
 } from './dto/lookup.dto';
 import {
   AccessToken,
-  CurrentUser,
+  OptionalAccessToken,
+  OptionalUserId,
 } from '../common/decorators/current-user.decorator';
-import type { AuthenticatedUser } from '../common/http/request-context';
+import { Public } from '../common/decorators/public.decorator';
+import { OptionalAuthGuard } from '../auth/guards/optional-auth.guard';
 
 /**
  * `/api/v1/lookups`. Reference data for the whole app, plus custom game/role
@@ -19,9 +21,28 @@ import type { AuthenticatedUser } from '../common/http/request-context';
 export class LookupsController {
   constructor(private readonly lookups: LookupsService) {}
 
+  /**
+   * The catalogue. **Readable without a session, and that is required rather than
+   * convenient:** the app loads reference data during startup, before any
+   * sign-in, because the login and signup screens render its games, roles, ranks
+   * and categories. While this demanded a token, a cold start answered
+   * `401 Missing bearer token.` and every one of those pickers was empty.
+   *
+   * A signed-in caller gets more, not different: `OptionalAuthGuard` verifies a
+   * token when one is sent, which is what lets the service add the caller's own
+   * inactive custom entries. That is also why the app re-reads this on sign-in.
+   *
+   * Nothing here is private — RLS grants `anon` SELECT on all seven tables. The
+   * three registration routes below stay fully protected.
+   */
+  @Public()
+  @UseGuards(OptionalAuthGuard)
   @Get()
-  all(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.lookups.all(token, user.id);
+  all(
+    @OptionalAccessToken() token: string | undefined,
+    @OptionalUserId() userId: string | undefined,
+  ) {
+    return this.lookups.all(token, userId);
   }
 
   @Post('games')

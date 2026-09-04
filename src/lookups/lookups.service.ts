@@ -21,8 +21,20 @@ type Row = Record<string, unknown>;
 export class LookupsService {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async all(token: string, userId: string): Promise<Record<string, Row[]>> {
-    const client = this.supabase.asCaller(token);
+  /**
+   * The catalogue, as the caller is entitled to see it.
+   *
+   * Both arguments are optional because this route serves signed-out callers —
+   * the app reads it during startup for the login and signup screens. With no
+   * token it runs as `anon`, which RLS already grants SELECT on all seven tables,
+   * and the `created_by` half of the `or` matches nothing. With a token it runs as
+   * that caller, which is what surfaces their own inactive custom entries.
+   */
+  async all(token?: string, userId?: string): Promise<Record<string, Row[]>> {
+    const client = token ? this.supabase.asCaller(token) : this.supabase.anon();
+    // A sentinel rather than a branch on the `or` filter: `created_by` is a uuid
+    // column, so an empty string would be a malformed filter, and the nil uuid
+    // simply matches no row.
     const mine = isUuid(userId) ? userId : '00000000-0000-0000-0000-000000000000';
 
     const [games, roles, gameRoles, gameRanks, reportReasons, teamCategories, postTypes] =

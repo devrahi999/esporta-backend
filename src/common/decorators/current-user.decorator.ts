@@ -28,6 +28,24 @@ export const AccessToken = createParamDecorator(
 );
 
 /**
+ * The caller's access token if they sent a valid one, otherwise undefined.
+ *
+ * For a `@Public()` route behind `OptionalAuthGuard`, where being signed in
+ * enriches the answer but is not required. The handler must branch on it — an
+ * undefined token means serve this with the `anon` client.
+ */
+export const OptionalAccessToken = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): string | undefined =>
+    reqOf(ctx).esporta?.accessToken,
+);
+
+/** The verified user's id if they sent a valid token, otherwise undefined. */
+export const OptionalUserId = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): string | undefined =>
+    reqOf(ctx).esporta?.user?.id,
+);
+
+/**
  * The resolved active profile id. Requires `ActiveProfileGuard` on the route;
  * throws if it wasn't run so misuse fails loudly instead of acting as the wrong
  * profile.
