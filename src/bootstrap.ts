@@ -1,29 +1,19 @@
 import 'reflect-metadata';
 import { INestApplication, RequestMethod, ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter } from '@nestjs/platform-express';
-import type { Express } from 'express';
-import { AppModule } from './app.module';
-import { AppLogger } from './common/logger/app-logger';
 import { AppConfigService } from './config/app-config.service';
 
 /**
- * Builds and initialises the Nest application, applying every cross-cutting
- * concern (prefix, validation, CORS). It calls `app.init()` but NOT
- * `app.listen()`, so the same function serves both the local server (main.ts)
- * and the Vercel serverless handler (api/index.ts) — a short-lived request/
- * response model, per plan §41.
+ * Every cross-cutting concern, applied to an already-created Nest app: the route
+ * prefix, the validation pipe, and CORS.
  *
- * @param expressInstance when provided, Nest binds to it so a serverless entry
- * can hand the raw Express app to Vercel's Node runtime.
+ * Separate from {@link ../main.ts} so the entrypoint reads as an entrypoint and
+ * this stays the one place the app-wide policy lives. It deliberately does NOT
+ * create the app: `NestFactory` belongs in `main.ts`, which is both the Nest
+ * convention and what Vercel's NestJS detection looks for — it scans the
+ * entrypoint for an `@nestjs/core` import and refuses to build without one
+ * ("No entrypoint found which imports nestjs").
  */
-export async function createNestApp(expressInstance?: Express): Promise<INestApplication> {
-  const logger = new AppLogger('Esporta');
-
-  const app = expressInstance
-    ? await NestFactory.create(AppModule, new ExpressAdapter(expressInstance), { logger, rawBody: true })
-    : await NestFactory.create(AppModule, { logger, rawBody: true });
-
+export function configureApp(app: INestApplication): void {
   const config = app.get(AppConfigService);
 
   // All app routes under /api/v1 (plan §31); health stays at /health (§34).
@@ -59,7 +49,4 @@ export async function createNestApp(expressInstance?: Express): Promise<INestApp
     exposedHeaders: ['x-request-id'],
     maxAge: 600,
   });
-
-  await app.init();
-  return app;
 }

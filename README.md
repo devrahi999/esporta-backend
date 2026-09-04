@@ -39,10 +39,9 @@ service-role key is used only for genuinely actor-less work.
 
 ```
 esporta-backend/
-├── api/index.ts            # Vercel serverless entry (imports compiled dist/)
 ├── src/
-│   ├── main.ts             # local server entry
-│   ├── bootstrap.ts        # shared app factory (prefix, CORS, validation)
+│   ├── main.ts             # the entry point: NestFactory + configureApp + listen
+│   ├── bootstrap.ts        # app-wide policy applied to it (prefix, CORS, validation)
 │   ├── app.module.ts
 │   ├── config/             # env validation (zod) + typed AppConfigService
 │   ├── common/             # errors, envelope, logger, interceptors, filter, guards' helpers
@@ -90,11 +89,24 @@ curl localhost:3000/api/v1/auth/me -H "Authorization: Bearer <supabase-access-to
 
 ## Deployment (Vercel)
 
-Set the Vercel project **Root Directory** to `esporta-backend/`. `vercel.json`
-runs `npm run build` and rewrites all routes to the `api/index.ts` function,
-which serves the compiled Nest app. Configure every secret from `.env.example`
-as a Project Environment Variable (`SUPABASE_SERVICE_ROLE_KEY` and provider keys
-are server-side only — never shipped to Flutter).
+Deployed with Vercel's **NestJS** framework support, not a custom serverless
+adapter. The detection rule that matters: Vercel identifies the app by finding an
+entrypoint under `sourceRoot` that imports `@nestjs/core`, so `src/main.ts` must be
+where `NestFactory` is called. Moving that behind a helper is what produces
+`No entrypoint found which imports nestjs. Found possible entrypoint: src/main.ts`.
+
+This repository's root **is** the backend (`github.com/devrahi999/esporta-backend`),
+so the Vercel project's **Root Directory must be empty**, not `esporta-backend/`.
+Framework Preset auto-detects as NestJS, Build Command is `npm run build`, and
+Output Directory must stay unset — a value like `public` makes Vercel look for
+static output and ignore the server. `vercel.json` carries nothing but `$schema`
+on purpose; the defaults are correct.
+
+`app.listen(config.port)` reads `process.env.PORT`, which the platform injects.
+
+Configure every secret from `.env.example` as a Project Environment Variable
+(`SUPABASE_SERVICE_ROLE_KEY` and provider keys are server-side only — never
+shipped to Flutter).
 
 ## API conventions
 
