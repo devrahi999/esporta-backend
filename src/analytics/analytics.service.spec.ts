@@ -97,6 +97,23 @@ function postView(eventId?: string): AnalyticsEventDto {
   };
 }
 
+/** One stage of the playback watch funnel, carrying an increment of watched time. */
+function watchEvent(name: string, watchMs: number, eventId?: string): AnalyticsEventDto {
+  return {
+    name,
+    entity_type: 'post',
+    entity_id: POST,
+    ...(eventId ? { event_id: eventId } : {}),
+    properties: {
+      watch_time_ms: watchMs,
+      playback_session_id: 'pass-1',
+      media_duration_ms: 30000,
+    },
+    session_id: 'session-1',
+    platform: 'android',
+  };
+}
+
 /** A session-level event: no entity, and the taxonomy forbids one. */
 function appOpen(eventId?: string): AnalyticsEventDto {
   return {
@@ -106,6 +123,61 @@ function appOpen(eventId?: string): AnalyticsEventDto {
     platform: 'android',
   };
 }
+
+describe('playback watch funnel', () => {
+  // The rollup reads exactly one payload key — `properties.watch_time_ms` — and
+  // sums it across every `…_watch%` and `…_complete` event. If validation
+  // stripped it, or the taxonomy refused one of the names, watch time would read
+  // zero on every dashboard while ingestion answered 201.
+  const names = [
+    'short_watch',
+    'short_watch_progress',
+    'short_watch_25',
+    'short_watch_50',
+    'short_watch_75',
+    'short_complete',
+    'post_watch',
+    'post_watch_progress',
+    'post_watch_25',
+    'post_watch_50',
+    'post_watch_75',
+    'post_complete',
+  ];
+
+  it.each(names)('accepts %s and forwards watch_time_ms untouched', async (name) => {
+    const { service, calls } = makeService();
+
+    const result = await service.ingest(TOKEN, USER, ME, [watchEvent(name, 4321)]);
+
+    expect(result.received).toBe(1);
+    const sent = calls[0].params.p_events as Array<Record<string, unknown>>;
+    expect(sent[0].name).toBe(name);
+    expect(sent[0].properties).toEqual({
+      watch_time_ms: 4321,
+      playback_session_id: 'pass-1',
+      media_duration_ms: 30000,
+    });
+  });
+
+  it('refuses a watch name that is not in the taxonomy', async () => {
+    const { service } = makeService();
+
+    await expect(
+      service.ingest(TOKEN, USER, ME, [watchEvent('post_watch_90', 100)]),
+    ).rejects.toThrow();
+  });
+
+  it('accepts a heartbeat with no watched time — the tracker omits the key', async () => {
+    const { service, calls } = makeService();
+
+    const event = watchEvent('short_watch', 0);
+    delete (event.properties as Record<string, unknown>).watch_time_ms;
+    await service.ingest(TOKEN, USER, ME, [event]);
+
+    const sent = calls[0].params.p_events as Array<Record<string, unknown>>;
+    expect(sent[0].properties).not.toHaveProperty('watch_time_ms');
+  });
+});
 
 describe('ingestion', () => {
   it('sends one batch call and reports the database answer', async () => {

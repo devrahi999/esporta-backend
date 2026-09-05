@@ -23,6 +23,12 @@ export const ANALYTICS_EVENT_NAMES = [
   'short_impression',
   'short_view',
   'short_watch',
+  // Carries watched time and moves no counter. The rollup counts starts with
+  // `name = 'short_watch'` exactly and sums watched time across
+  // `name like 'short_watch%'`, so a progress row adds duration without
+  // inflating starts — which is what lets the client report watched time on a
+  // heartbeat instead of only when a milestone happens to be crossed.
+  'short_watch_progress',
   'short_watch_25',
   'short_watch_50',
   'short_watch_75',
@@ -30,6 +36,17 @@ export const ANALYTICS_EVENT_NAMES = [
   'short_reaction',
   'short_comment',
   'short_share',
+  // Playback on an ordinary video post. The same five stages plus the same
+  // heartbeat, aggregated into the same `watch_*` rollup columns — `is_short`
+  // on the rollup row is what separates a post's watch data from a short's.
+  // Before these existed a video post reported an impression, a view and an
+  // open and nothing at all about whether it was watched.
+  'post_watch',
+  'post_watch_progress',
+  'post_watch_25',
+  'post_watch_50',
+  'post_watch_75',
+  'post_complete',
   // Profile / social
   'profile_view',
   'team_view',
@@ -71,10 +88,17 @@ export const EVENT_ENTITY_RULES: Record<AnalyticsEventName, { type: AnalyticsEnt
   short_impression: { type: 'post', required: true },
   short_view: { type: 'post', required: true },
   short_watch: { type: 'post', required: true },
+  short_watch_progress: { type: 'post', required: true },
   short_watch_25: { type: 'post', required: true },
   short_watch_50: { type: 'post', required: true },
   short_watch_75: { type: 'post', required: true },
   short_complete: { type: 'post', required: true },
+  post_watch: { type: 'post', required: true },
+  post_watch_progress: { type: 'post', required: true },
+  post_watch_25: { type: 'post', required: true },
+  post_watch_50: { type: 'post', required: true },
+  post_watch_75: { type: 'post', required: true },
+  post_complete: { type: 'post', required: true },
   short_reaction: { type: 'post', required: true },
   short_comment: { type: 'post', required: true },
   short_share: { type: 'post', required: true },
