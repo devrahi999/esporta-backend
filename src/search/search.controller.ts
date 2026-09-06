@@ -34,6 +34,11 @@ function toLimit(v?: string): number | undefined {
  * hydrates for the active profile (viewer reaction/saved), so it needs the
  * active-profile guard; the class-level guard also validates the header the app
  * always sends.
+ *
+ * Profile and team search resolve the active profile for the same reason: the
+ * ranked path is per-viewer (identity affinity comes from the viewer's own
+ * feature model), and `ActiveProfileGuard` establishes the viewer id without
+ * ever trusting a client-supplied one.
  */
 @Controller('search')
 @UseGuards(ActiveProfileGuard)
@@ -43,6 +48,7 @@ export class SearchController {
   @Get('profiles')
   profiles(
     @AccessToken() token: string,
+    @ActiveProfileId() me: string,
     @Query('q') q?: string,
     @Query('limit') limit?: string,
     @Query('game') game?: string,
@@ -52,7 +58,7 @@ export class SearchController {
     @Query('verified') verified?: string,
     @Query('order') order?: string,
   ) {
-    return this.search.profiles(token, {
+    return this.search.profiles(token, me, {
       q: nz(q),
       limit: toLimit(limit),
       gameId: nz(game),
@@ -67,6 +73,7 @@ export class SearchController {
   @Get('teams')
   teams(
     @AccessToken() token: string,
+    @ActiveProfileId() me: string,
     @Query('q') q?: string,
     @Query('limit') limit?: string,
     @Query('game') game?: string,
@@ -75,7 +82,7 @@ export class SearchController {
     @Query('verified') verified?: string,
     @Query('order') order?: string,
   ) {
-    return this.search.teams(token, {
+    return this.search.teams(token, me, {
       q: nz(q),
       limit: toLimit(limit),
       gameId: nz(game),

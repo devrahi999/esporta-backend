@@ -9,9 +9,9 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { PostsService } from './posts.service';
+import { PostsService, type PostPage } from './posts.service';
 import { CreatePostDto, MediaIdsDto, UpdateCaptionDto } from './dto/post.dto';
-import { CursorQueryDto } from '../common/dto/pagination.dto';
+import { CursorQueryDto, FeedQueryDto } from '../common/dto/pagination.dto';
 import { ActiveProfileGuard } from '../auth/guards/active-profile.guard';
 import {
   AccessToken,
@@ -19,6 +19,7 @@ import {
 } from '../common/decorators/current-user.decorator';
 import { AppException } from '../common/errors/app-exception';
 import { isUuid } from '../common/utils/uuid';
+import { enveloped } from '../common/http/api-response';
 
 /**
  * `/api/v1/posts`. Every route acts as the resolved active profile (person or
@@ -30,14 +31,35 @@ import { isUuid } from '../common/utils/uuid';
 export class PostsController {
   constructor(private readonly posts: PostsService) {}
 
+  /**
+   * The Home feed.
+   *
+   * BACKWARD-COMPATIBLE BY CONSTRUCTION. `data` is still the bare array of posts
+   * every existing client expects; the ranked cursor and the algorithm version
+   * ride in `meta`, which an older client ignores. So the same response serves an
+   * un-updated app (keeps paging by `before=created_at`) and an updated one
+   * (pages by `meta.cursor` and gets stable ranked pagination).
+   *
+   * `meta` deliberately carries version and counts only — never a score
+   * breakdown. Score components are internal and reachable only through the
+   * capability-gated admin surface (§23).
+   */
   @Get('feed')
-  feed(@AccessToken() token: string, @ActiveProfileId() me: string, @Query() q: CursorQueryDto) {
-    return this.posts.feed(token, me, q);
+  async feed(
+    @AccessToken() token: string,
+    @ActiveProfileId() me: string,
+    @Query() q: FeedQueryDto,
+  ) {
+    return feedEnvelope(await this.posts.feed(token, me, q));
   }
 
   @Get('shorts')
-  shorts(@AccessToken() token: string, @ActiveProfileId() me: string, @Query() q: CursorQueryDto) {
-    return this.posts.shorts(token, me, q);
+  async shorts(
+    @AccessToken() token: string,
+    @ActiveProfileId() me: string,
+    @Query() q: FeedQueryDto,
+  ) {
+    return feedEnvelope(await this.posts.shorts(token, me, q));
   }
 
   @Get('saved')
@@ -107,4 +129,27 @@ export class PostsController {
     if (!isUuid(id)) throw AppException.validation('Invalid post id.');
     return this.posts.unsave(token, me, id);
   }
+}
+
+/**
+ * Wraps a {@link PostPage} so `data` stays the plain post array and the ranking
+ * metadata travels in `meta`.
+ *
+ * Only non-sensitive fields are surfaced: which surface ran, whether the page was
+ * ranked, the algorithm version (needed for traceability and for reproducing a
+ * report) and the cursor. Candidate counts, score components and feature values
+ * stay server-side.
+ */
+function feedEnvelope(page: PostPage) {
+  return enveloped(page.items, {
+    ranked: page.ranked,
+    cursor: page.cursor,
+    ...(page.meta
+      ? {
+          surface: page.meta.surface,
+          algorithmVersion: page.meta.algorithmVersion,
+          configVersionId: page.meta.configVersionId,
+        }
+      : {}),
+  });
 }

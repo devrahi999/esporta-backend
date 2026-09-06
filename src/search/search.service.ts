@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { PostsService } from '../posts/posts.service';
+import { RecommendationService } from '../recommendation/recommendation.service';
 import { clampLimit } from '../common/dto/pagination.dto';
 import { blockedIdentityIds, inList } from '../common/db/blocks.util';
 
@@ -96,15 +97,16 @@ export class SearchService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly posts: PostsService,
+    private readonly recommendations: RecommendationService,
   ) {}
 
-  async profiles(token: string, params: ProfileSearchParams): Promise<Row[]> {
+  async profiles(token: string, viewerId: string, params: ProfileSearchParams): Promise<Row[]> {
     const max = clampLimit(params.limit, 40, 50);
     const needsGameJoin = !!params.gameId || !!params.gameRoleSlug;
     const select = `${IDENTITY_COLUMNS}, ${profileEmbed(needsGameJoin)}, ${MEMBERSHIP_EMBED}`;
 
-    const rankedIds = await this.rankedIds(token, params.q, 'personal', max);
-    if (rankedIds && rankedIds.length === 0) return [];
+    const lexical = await this.rankedIdsWithScore(token, params.q, 'personal', max);
+    if (lexical && lexical.length === 0) return [];
 
     const client = this.supabase.asCaller(token);
     let req = client
@@ -113,7 +115,7 @@ export class SearchService {
       .eq('kind', 'personal')
       .eq('status', 'active');
 
-    if (rankedIds) req = req.in('id', rankedIds);
+    if (lexical) req = req.in('id', lexical.map((r) => r.id));
     const blocked = await blockedIdentityIds(this.supabase, token);
     if (blocked.length) req = req.not('id', 'in', inList(blocked));
     if (params.verifiedOnly) req = req.eq('verified', true);
@@ -122,19 +124,30 @@ export class SearchService {
     if (params.gameId) req = req.eq('profiles.user_games.game_id', params.gameId);
     if (params.gameRoleSlug) req = req.eq('profiles.user_games.role', params.gameRoleSlug);
 
-    const ordered = rankedIds
+    const ordered = lexical
       ? req.limit(max)
       : req.order(orderColumn(params.order), { ascending: false }).limit(max);
     const rows = await this.supabase.run<Row[]>(ordered);
-    return rankedIds ? this.inRankedOrder(rows, rankedIds) : rows;
+    if (!lexical) return rows;
+
+    // Re-order the HYDRATED rows by the ranked order, so identities RLS filtered
+    // out of hydration simply drop rather than shifting the ranked sequence —
+    // the same fail-closed pattern as post search's byIds.
+    const rankedOrder = await this.identityRankedOrder(
+      token,
+      viewerId,
+      lexical,
+    );
+    const hydratedOrder = rankedOrder ?? lexical.map((r) => r.id);
+    return this.inRankedOrder(rows, hydratedOrder);
   }
 
-  async teams(token: string, params: TeamSearchParams): Promise<Row[]> {
+  async teams(token: string, viewerId: string, params: TeamSearchParams): Promise<Row[]> {
     const max = clampLimit(params.limit, 40, 50);
     const select = `${IDENTITY_COLUMNS}, ${TEAM_EMBED}`;
 
-    const rankedIds = await this.rankedIds(token, params.q, 'team', max);
-    if (rankedIds && rankedIds.length === 0) return [];
+    const lexical = await this.rankedIdsWithScore(token, params.q, 'team', max);
+    if (lexical && lexical.length === 0) return [];
 
     const client = this.supabase.asCaller(token);
     let req = client
@@ -143,7 +156,7 @@ export class SearchService {
       .eq('kind', 'team')
       .eq('status', 'active');
 
-    if (rankedIds) req = req.in('id', rankedIds);
+    if (lexical) req = req.in('id', lexical.map((r) => r.id));
     const blocked = await blockedIdentityIds(this.supabase, token);
     if (blocked.length) req = req.not('id', 'in', inList(blocked));
     if (params.verifiedOnly) req = req.eq('verified', true);
@@ -151,40 +164,110 @@ export class SearchService {
     if (params.gameId) req = req.eq('teams.primary_game_id', params.gameId);
     if (params.recruitingOnly) req = req.eq('teams.recruiting', 'open');
 
-    const ordered = rankedIds
+    const ordered = lexical
       ? req.limit(max)
       : req.order(orderColumn(params.order), { ascending: false }).limit(max);
     const rows = await this.supabase.run<Row[]>(ordered);
-    return rankedIds ? this.inRankedOrder(rows, rankedIds) : rows;
+    if (!lexical) return rows;
+
+    const rankedOrder = await this.identityRankedOrder(token, viewerId, lexical);
+    const hydratedOrder = rankedOrder ?? lexical.map((r) => r.id);
+    return this.inRankedOrder(rows, hydratedOrder);
   }
 
-  async postsSearch(token: string, viewerId: string, q: string, limit?: number): Promise<unknown[]> {
-    const rows = await this.supabase.rpcAsCaller<Array<{ id: string }>>(token, 'search_post_ids', {
-      q,
-      max_rows: clampLimit(limit, 20, 50),
+  /**
+   * The bounded personalised re-ordering for identity search, shared by profiles
+   * and teams. Returns null when ranking did not produce an ordering (disabled,
+   * failure, empty) — the caller then keeps the lexical order, which is the
+   * pre-ranking behaviour, not an error.
+   *
+   * Query relevance stays dominant BY CONSTRUCTION: the ranker only re-orders
+   * the lexical result set, and relevance multiplies the whole score.
+   */
+  private async identityRankedOrder(
+    _token: string,
+    viewerId: string,
+    lexical: Array<{ id: string; score: number }>,
+  ): Promise<string[] | null> {
+    const slate = await this.recommendations.rankIdentitySearch({
+      viewerId,
+      relevance: new Map(lexical.map((r) => [r.id, r.score])),
+      identityIds: lexical.map((r) => r.id),
     });
-    const ids = (rows ?? []).map((r) => r.id);
+    if (slate.fallback || slate.rankedIds.length === 0) return null;
+    return slate.rankedIds;
+  }
+
+  /**
+   * Post search: lexical relevance first, then a bounded personalised re-rank.
+   *
+   * `search_post_ids` returns `(id, score)` and the score used to be discarded —
+   * so a typo match and an exact caption match arrived indistinguishable, and the
+   * only ordering left was whatever came back. It is now carried into the ranker
+   * as a MULTIPLICATIVE GATE, which is what keeps §12 true: an exact match cannot
+   * be pushed below a weakly-related but popular or familiar entity, because
+   * relevance scales the whole score rather than adding to it.
+   *
+   * Ranking is restricted to the lexical result set — search never generates
+   * candidates of its own, so it cannot drift into being a recommendation feed.
+   * If ranking is disabled or fails, the original relevance order is served
+   * unchanged.
+   */
+  async postsSearch(token: string, viewerId: string, q: string, limit?: number): Promise<unknown[]> {
+    const max = clampLimit(limit, 20, 50);
+    const rows = await this.supabase.rpcAsCaller<Array<{ id: string; score: number | string }>>(
+      token,
+      'search_post_ids',
+      { q, max_rows: max },
+    );
+    const matches = rows ?? [];
+    if (matches.length === 0) return [];
+
+    const relevanceOrder = matches.map((r) => r.id);
+    const relevance = new Map(
+      matches.map((r) => [r.id, typeof r.score === 'number' ? r.score : Number(r.score) || 0]),
+    );
+
+    const slate = await this.recommendations.rank({
+      viewerId,
+      surface: 'search',
+      limit: max,
+      relevance,
+      restrictTo: relevanceOrder,
+    });
+
+    const ids = slate.fallback || slate.postIds.length === 0 ? relevanceOrder : slate.postIds;
     return this.posts.byIds(token, viewerId, ids);
   }
 
   /**
-   * Ranked identity ids for a text query, or null when the query is empty
-   * (browse mode — the caller orders by column instead of relevance).
+   * Lexical matches WITH their relevance scores for a text query, or null when
+   * the query is empty (browse mode — the caller orders by column instead).
+   *
+   * The score used to be discarded here, so a typo match and an exact match were
+   * indistinguishable to the re-ranker. It is now carried through to the ranker,
+   * which multiplies the whole personalised score by it — the same fix post
+   * search received.
    */
-  private async rankedIds(
+  private async rankedIdsWithScore(
     token: string,
     q: string | undefined,
     targetKind: 'personal' | 'team',
     max: number,
-  ): Promise<string[] | null> {
+  ): Promise<Array<{ id: string; score: number }> | null> {
     const query = (q ?? '').trim();
     if (!query) return null;
-    const ranked = await this.supabase.rpcAsCaller<Array<{ id: string }>>(token, 'search_identity_ids', {
+    const ranked = await this.supabase.rpcAsCaller<
+      Array<{ id: string; score: number | string }> | null
+    >(token, 'search_identity_ids', {
       q: query,
       target_kind: targetKind,
       max_rows: max,
     });
-    return (ranked ?? []).map((r) => r.id);
+    return (ranked ?? []).map((r) => ({
+      id: r.id,
+      score: typeof r.score === 'number' ? r.score : Number(r.score) || 0,
+    }));
   }
 
   /** Restores the ranker's relevance order (PostgREST cannot sort by id list). */

@@ -4,6 +4,8 @@ import { IsEmail, IsInt, IsOptional, Max, MaxLength, Min } from 'class-validator
 import { PushDispatchService } from '../push/push-dispatch.service';
 import { EmailService } from '../email/email.service';
 import { AnalyticsAggregateService } from '../analytics/analytics-aggregate.service';
+import { RecommendationFeaturesService } from '../recommendation/recommendation-features.service';
+import { RecommendationConfigService } from '../recommendation/recommendation-config.service';
 import { DispatchSecretGuard } from './dispatch-secret.guard';
 import { Public } from '../common/decorators/public.decorator';
 
@@ -36,6 +38,8 @@ export class InternalController {
     private readonly pushDispatch: PushDispatchService,
     private readonly email: EmailService,
     private readonly analyticsAggregate: AnalyticsAggregateService,
+    private readonly recoFeatures: RecommendationFeaturesService,
+    private readonly recoConfig: RecommendationConfigService,
   ) {}
 
   @Post('push-dispatch')
@@ -101,5 +105,38 @@ export class InternalController {
   @Post('analytics-aggregate')
   aggregateManual(@Body() dto: AggregateDaysDto) {
     return this.analyticsAggregate.runRecent(dto.days ?? 7);
+  }
+
+  /**
+   * The recommendation feature rebuild (Recommendation Phase 1, §38/§39).
+   *
+   * Recomputes content, identity and user features from the daily analytics
+   * rollups, prunes the exposure ring buffer, and passes the ACTIVE config's
+   * signal weights and decay into SQL — so retuning the interest model takes
+   * effect here without a deploy. The ACTIVE config version id is stamped into
+   * the result, making every feature state traceable to the config that produced
+   * it.
+   *
+   * Scheduled like `analytics-aggregate`: one authenticated GET per day. It
+   * must run AFTER aggregation (features read the rollups), so the existing
+   * 00:15 UTC analytics job is followed by this one at 00:45 UTC — a separate
+   * cron entry on cron-job.org, the same external-scheduler pattern, and never
+   * an in-process scheduler (Vercel has no long-lived workers).
+   *
+   * Idempotent and self-healing: every table is recompute-and-replace, so a
+   * missed night is corrected by the next run and a re-run is a no-op.
+   */
+  @Get('recommendations-rebuild')
+  async recommendationsRebuildCron() {
+    const { config, versionId } = await this.recoConfig.active();
+    const result = await this.recoFeatures.rebuildAll(config);
+    return { configVersionId: versionId, result };
+  }
+
+  @Post('recommendations-rebuild')
+  async recommendationsRebuildManual() {
+    const { config, versionId } = await this.recoConfig.active();
+    const result = await this.recoFeatures.rebuildAll(config);
+    return { configVersionId: versionId, result };
   }
 }

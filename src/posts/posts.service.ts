@@ -3,9 +3,28 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { AppException } from '../common/errors/app-exception';
 import { blockedIdentityIds, inList } from '../common/db/blocks.util';
 import { clampLimit } from '../common/dto/pagination.dto';
+import {
+  RecommendationService,
+  type RankedSlateMeta,
+} from '../recommendation/recommendation.service';
 import type { CreatePostDto } from './dto/post.dto';
 
 const SHORT_TYPE = 'short';
+
+/**
+ * A page of posts plus what a ranked read needs to describe itself.
+ *
+ * `cursor` is the opaque slate cursor when ranking served the page, and null on
+ * the chronological path (which still pages by `before=created_at`). A client
+ * that ignores `cursor` keeps working on the timestamp keyset, which is what
+ * lets ranking ship without a coordinated app release.
+ */
+export interface PostPage {
+  items: PostRow[];
+  cursor: string | null;
+  ranked: boolean;
+  meta?: RankedSlateMeta;
+}
 
 /**
  * The shared post projection — identical to the app's `_columns` so every post
@@ -30,6 +49,8 @@ type PostRow = Record<string, unknown> & { id: string; media?: MediaRow[] };
 interface Cursor {
   limit?: number;
   before?: string;
+  /** Opaque ranked-slate cursor. Takes precedence over `before` when present. */
+  cursor?: string;
 }
 
 /**
@@ -41,28 +62,93 @@ interface Cursor {
  */
 @Injectable()
 export class PostsService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly recommendations: RecommendationService,
+  ) {}
 
-  async feed(token: string, viewerId: string, cursor: Cursor): Promise<PostRow[]> {
+  /**
+   * The Home feed. Ranked when the `feed` surface is enabled, chronological
+   * otherwise or whenever ranking cannot produce a slate.
+   *
+   * THE FALLBACK IS NOT AN ERROR PATH, it is the contract: an empty candidate
+   * pool, a missing config, a database hiccup in the feature layer or a disabled
+   * surface all end up here, and the user gets the feed Esporta shipped before
+   * ranking existed rather than an error (§29).
+   */
+  async feed(token: string, viewerId: string, cursor: Cursor): Promise<PostPage> {
     const limit = clampLimit(cursor.limit, 10);
-    const client = this.supabase.asCaller(token);
-    let query = client.from('posts').select(POST_COLUMNS).neq('type_id', SHORT_TYPE);
-    const blocked = await blockedIdentityIds(this.supabase, token);
-    if (blocked.length) query = query.not('author_id', 'in', inList(blocked));
-    if (cursor.before) query = query.lt('created_at', cursor.before);
-    const rows = await this.supabase.run<PostRow[]>(
-      query.order('created_at', { ascending: false }).limit(limit),
-    );
-    return this.hydrate(token, viewerId, rows);
+    const ranked = await this.rankedPage(token, viewerId, 'feed', limit, cursor.cursor);
+    if (ranked) return ranked;
+    const items = await this.chronological(token, viewerId, limit, cursor.before, false);
+    return { items, cursor: null, ranked: false };
   }
 
-  async shorts(token: string, viewerId: string, cursor: Cursor): Promise<PostRow[]> {
+  /** Shorts. Same ranked-then-chronological contract as {@link feed}. */
+  async shorts(token: string, viewerId: string, cursor: Cursor): Promise<PostPage> {
     const limit = clampLimit(cursor.limit, 10);
+    const ranked = await this.rankedPage(token, viewerId, 'shorts', limit, cursor.cursor);
+    if (ranked) return ranked;
+    const items = await this.chronological(token, viewerId, limit, cursor.before, true);
+    return { items, cursor: null, ranked: false };
+  }
+
+  /**
+   * Attempts a ranked page. Returns null when ranking did not produce one and
+   * the caller must fall back.
+   *
+   * The two-layer eligibility contract lives here: the recommendation service
+   * decides the ORDER (running with the service role, since the feature tables
+   * hold every user's interest graph), and {@link byIds} then fetches those ids
+   * with the CALLER's client so RLS decides what is actually returned. An id the
+   * viewer may not see simply yields no row — so a ranking bug can mis-order a
+   * feed but cannot leak a private, blocked or deleted post.
+   */
+  private async rankedPage(
+    token: string,
+    viewerId: string,
+    surface: 'feed' | 'shorts',
+    limit: number,
+    cursor: string | undefined,
+  ): Promise<PostPage | null> {
+    const slate = await this.recommendations.rank({
+      viewerId,
+      surface,
+      limit,
+      cursor,
+    });
+    if (slate.fallback || slate.postIds.length === 0) return null;
+
+    const items = await this.byIds(token, viewerId, slate.postIds);
+    // Shorts with no surviving video are dropped here, as the chronological path
+    // does — a clip whose media was deleted reaches the player as a blank page.
+    const usable = surface === 'shorts' ? items.filter(hasPlayableVideo) : items;
+
+    // Every ranked id was filtered out by RLS or media checks. Falling back
+    // rather than returning an empty page keeps a viewer whose whole slate was
+    // ineligible from seeing an empty feed.
+    if (usable.length === 0) return null;
+
+    return { items: usable, cursor: slate.nextCursor, ranked: true, meta: slate.meta };
+  }
+
+  /**
+   * The original chronological read, unchanged in behaviour — still the fallback
+   * and still what `before=` paginates.
+   */
+  private async chronological(
+    token: string,
+    viewerId: string,
+    limit: number,
+    before: string | undefined,
+    shortsOnly: boolean,
+  ): Promise<PostRow[]> {
     const client = this.supabase.asCaller(token);
-    let query = client.from('posts').select(POST_COLUMNS).eq('type_id', SHORT_TYPE);
+    let query = client.from('posts').select(POST_COLUMNS);
+    query = shortsOnly ? query.eq('type_id', SHORT_TYPE) : query.neq('type_id', SHORT_TYPE);
     const blocked = await blockedIdentityIds(this.supabase, token);
     if (blocked.length) query = query.not('author_id', 'in', inList(blocked));
-    if (cursor.before) query = query.lt('created_at', cursor.before);
+    if (before) query = query.lt('created_at', before);
     const rows = await this.supabase.run<PostRow[]>(
       query.order('created_at', { ascending: false }).limit(limit),
     );
@@ -244,4 +330,18 @@ export class PostsService {
       };
     });
   }
+}
+
+/**
+ * Whether a post still has playable video.
+ *
+ * The chronological Shorts path has always dropped clips whose media was deleted
+ * (the app would otherwise render a blank page to swipe past). The ranked path
+ * applies the same rule so the two cannot disagree about what a valid short is.
+ */
+function hasPlayableVideo(row: PostRow): boolean {
+  return (
+    Array.isArray(row.media) &&
+    row.media.some((m) => m.deleted_at == null && m.media_type === 'video')
+  );
 }

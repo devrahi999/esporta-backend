@@ -26,6 +26,7 @@ import { EmailModule } from './email/email.module';
 import { InternalModule } from './internal/internal.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { RecommendationModule } from './recommendation/recommendation.module';
 import { PublicModule } from './public/public.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
@@ -68,6 +69,7 @@ import { ReportsModule } from './reports/reports.module';
     InternalModule,
     AdminModule,
     AnalyticsModule,
+    RecommendationModule,
     PublicModule,
     SupportModule,
     ReportsModule,
