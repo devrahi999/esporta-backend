@@ -24,6 +24,17 @@ const ACTIVE_PROFILE_HEADER = 'x-active-profile-id';
 export class AuthService {
   constructor(private readonly supabase: SupabaseService) {}
 
+  async login(dto: { email: string; password: string }) {
+    const { data, error } = await this.supabase.anon().auth.signInWithPassword({
+      email: dto.email,
+      password: dto.password,
+    });
+    if (error) {
+      throw AppException.unauthenticated(error.message);
+    }
+    return data.session;
+  }
+
   extractToken(req: Request): string | undefined {
     const header = req.headers['authorization'];
     if (typeof header !== 'string') return undefined;
