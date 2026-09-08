@@ -142,6 +142,22 @@ export interface RankingInputs {
   /** `"post:<id>"` / `"identity:<id>"` → composed multiplier. */
   interventions: Record<string, number>;
   exposures: Record<string, ExposureRecord>;
+  /**
+   * The viewer's temporary admin-set control effect (Phase 2). Empty
+   * multipliers + 'default' exploration for the vast majority of viewers who
+   * have no active control row.
+   */
+  viewerControls: ViewerControlEffect;
+}
+
+/**
+ * The composed effect of a viewer's active control rows — per-key multipliers
+ * in the same "game:<id>" / "identity:<uuid>" / "content_type:<id>" key space
+ * as `viewerTopics`, plus a bounded exploration preference.
+ */
+export interface ViewerControlEffect {
+  multipliers: Record<string, number>;
+  exploration: 'low' | 'default' | 'high';
 }
 
 /**
@@ -162,6 +178,13 @@ export interface ScoreExplanation {
   penalties: Record<string, number>;
   /** The clamped manual-intervention multiplier, 1 when none applies. */
   interventionMultiplier: number;
+  /**
+   * The composed viewer-control multiplier (Phase 2), 1 when the viewer has no
+   * active control or none of its keys match this candidate. Present in the
+   * explanation so the user debugger can state exactly how a temporary admin
+   * override moved this item.
+   */
+  viewerControlMultiplier?: number;
   /** True when this slot was filled by the exploration allowance. */
   exploration: boolean;
   source: CandidateSource;

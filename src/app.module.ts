@@ -21,6 +21,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PushModule } from './push/push.module';
 import { SecurityModule } from './security/security.module';
 import { MediaModule } from './media/media.module';
+import { PlatformModule } from './platform/platform.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { EmailModule } from './email/email.module';
 import { InternalModule } from './internal/internal.module';
@@ -64,6 +65,7 @@ import { ReportsModule } from './reports/reports.module';
     PushModule,
     SecurityModule,
     MediaModule,
+    PlatformModule,
     WebhooksModule,
     EmailModule,
     InternalModule,

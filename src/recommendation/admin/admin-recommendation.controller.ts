@@ -18,11 +18,21 @@ import { AdminRecommendationService } from './admin-recommendation.service';
 import {
   ActivateConfigVersionDto,
   AdminPagingDto,
+  ContentStatsQueryDto,
   CreateConfigVersionDto,
+  CreateExperimentDto,
   CreateInterventionDto,
+  DaysQueryDto,
+  ExperimentIdDto,
   InterventionsQueryDto,
   RevokeInterventionDto,
+  RevokeViewerControlsDto,
+  StopExperimentDto,
+  TopPostsQueryDto,
+  UsersOverviewQueryDto,
   ValidateConfigDto,
+  ViewerControlsDto,
+  WindowQueryDto,
 } from './dto/admin-recommendation.dto';
 
 /**
@@ -107,8 +117,11 @@ export class AdminRecommendationController {
   }
 
   /**
-   * Runs the real pipeline with explanations. `limit` is clamped tight because
-   * this renders a breakdown per item and is not a data-export path.
+   * Runs the real pipeline with explanations, DRY-RUN (nothing recorded).
+   * `previewConfigVersionId` dry-runs a draft config; `q` supplies the search
+   * query for the search surface; `previewControls` (JSON) simulates a viewer
+   * control without applying it. `limit` clamped tight because this renders a
+   * breakdown per item and is not a data-export path.
    */
   @Get('debug/ranking/:viewerId/:surface')
   debugRanking(
@@ -116,6 +129,9 @@ export class AdminRecommendationController {
     @Param('viewerId') viewerId: string,
     @Param('surface') surface: string,
     @Query('limit') limit?: string,
+    @Query('previewConfigVersionId') previewConfigVersionId?: string,
+    @Query('q') q?: string,
+    @Query('previewControls') previewControls?: string,
   ) {
     const surfaces = ['feed', 'shorts', 'search'] as const;
     if (!surfaces.includes(surface as (typeof surfaces)[number])) {
@@ -124,6 +140,9 @@ export class AdminRecommendationController {
         viewerId,
         surface: 'feed',
         limit: clampLimit(Number(limit), 20, 50),
+        previewConfigVersionId,
+        query: q,
+        previewControls: parsePreviewControls(previewControls),
       });
     }
     return this.admin.debugRanking({
@@ -131,6 +150,9 @@ export class AdminRecommendationController {
       viewerId,
       surface: surface as (typeof surfaces)[number],
       limit: clampLimit(Number(limit), 20, 50),
+      previewConfigVersionId,
+      query: q,
+      previewControls: parsePreviewControls(previewControls),
     });
   }
 
@@ -181,9 +203,170 @@ export class AdminRecommendationController {
     return this.admin.revokeIntervention(token, user.id, id, dto.note);
   }
 
-  /** Operator-triggered feature rebuild — same code path as the cron. */
   @Post('rebuild')
   rebuild(@AccessToken() token: string) {
     return this.admin.rebuildNow(token);
+  }
+
+  // ------------------------------------------------------- Phase 2 analytics
+
+  @Get('exposure/overview')
+  exposureOverview(
+    @AccessToken() token: string,
+    @Query() q: WindowQueryDto,
+  ) {
+    return this.admin.exposureOverview(token, q.from, q.to, q.surface);
+  }
+
+  @Get('exposure/top-posts')
+  exposureTopPosts(@AccessToken() token: string, @Query() q: TopPostsQueryDto) {
+    return this.admin.exposureTopPosts(token, q);
+  }
+
+  @Get('exposure/top-creators')
+  exposureTopCreators(@AccessToken() token: string, @Query() q: WindowQueryDto) {
+    return this.admin.exposureTopCreators(token, q);
+  }
+
+  @Get('exposure/top-games')
+  exposureTopGames(@AccessToken() token: string, @Query() q: WindowQueryDto) {
+    return this.admin.exposureTopGames(token, q);
+  }
+
+  @Get('content')
+  contentStats(@AccessToken() token: string, @Query() q: ContentStatsQueryDto) {
+    return this.admin.contentStats(token, q);
+  }
+
+  @Get('content/:postId/exposure-history')
+  contentExposureHistory(
+    @AccessToken() token: string,
+    @Param('postId') postId: string,
+    @Query() q: DaysQueryDto,
+  ) {
+    return this.admin.postExposureHistory(token, postId, q.days);
+  }
+
+  @Get('users')
+  usersOverview(@AccessToken() token: string, @Query() q: UsersOverviewQueryDto) {
+    return this.admin.usersOverview(token, q);
+  }
+
+  @Get('identities/:identityId/stats')
+  identityStats(
+    @AccessToken() token: string,
+    @Param('identityId') identityId: string,
+    @Query() q: DaysQueryDto,
+  ) {
+    return this.admin.identityStats(token, identityId, q.days);
+  }
+
+  // ------------------------------------------------------ viewer controls
+
+  @Get('viewer-controls/:identityId')
+  viewerControls(
+    @AccessToken() token: string,
+    @Param('identityId') identityId: string,
+    @Query('surface') surface?: string,
+  ) {
+    const target = surface === 'feed' || surface === 'shorts' || surface === 'search'
+      ? surface
+      : 'feed';
+    return this.admin.getViewerControls(token, identityId, target);
+  }
+
+  @Post('viewer-controls')
+  setViewerControls(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ViewerControlsDto,
+  ) {
+    return this.admin.setViewerControls(token, user.id, {
+      identityId: dto.identityId,
+      surface: dto.surface ?? null,
+      controls: dto.controls,
+      reason: dto.reason,
+      expiresAt: dto.expiresAt,
+    });
+  }
+
+  @Post('viewer-controls/revoke')
+  revokeViewerControls(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RevokeViewerControlsDto,
+  ) {
+    return this.admin.revokeViewerControls(
+      token,
+      user.id,
+      dto.identityId,
+      dto.surface ?? null,
+      dto.note,
+    );
+  }
+
+  // ------------------------------------------------------------- experiments
+
+  @Get('experiments')
+  experiments(@AccessToken() token: string) {
+    return this.admin.listExperiments(token);
+  }
+
+  @Post('experiments')
+  createExperiment(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CreateExperimentDto,
+  ) {
+    return this.admin.createExperiment(token, user.id, dto);
+  }
+
+  @Post('experiments/start')
+  startExperiment(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ExperimentIdDto,
+  ) {
+    return this.admin.startExperiment(token, user.id, dto.experimentId);
+  }
+
+  @Post('experiments/stop')
+  stopExperiment(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: StopExperimentDto,
+  ) {
+    return this.admin.stopExperiment(token, user.id, dto.experimentId, dto.reason);
+  }
+}
+
+/**
+ * Parses the optional `previewControls` simulation document from a query
+ * string. Tolerant by design: an empty or malformed value means "no simulation"
+ * rather than an error, because the base debugger call (no simulation) is the
+ * common case. The multipliers are trusted no further than the ranker's own
+ * clamp band.
+ */
+function parsePreviewControls(raw?: string):
+  | { multipliers: Record<string, number>; exploration: 'low' | 'default' | 'high' }
+  | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as {
+      multipliers?: Record<string, unknown>;
+      exploration?: unknown;
+    };
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const multipliers: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed.multipliers ?? {})) {
+      if (typeof value === 'number' && Number.isFinite(value)) multipliers[key] = value;
+    }
+    const exploration =
+      parsed.exploration === 'low' || parsed.exploration === 'high'
+        ? parsed.exploration
+        : 'default';
+    return { multipliers, exploration };
+  } catch {
+    return undefined;
   }
 }

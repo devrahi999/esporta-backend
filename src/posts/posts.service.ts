@@ -7,6 +7,8 @@ import {
   RecommendationService,
   type RankedSlateMeta,
 } from '../recommendation/recommendation.service';
+import { PlatformPolicyService } from '../platform/platform-policy.service';
+import { ErrorCode } from '../common/errors/error-codes';
 import type { CreatePostDto } from './dto/post.dto';
 
 const SHORT_TYPE = 'short';
@@ -65,6 +67,7 @@ export class PostsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly recommendations: RecommendationService,
+    private readonly platform: PlatformPolicyService,
   ) {}
 
   /**
@@ -197,6 +200,20 @@ export class PostsService {
   }
 
   async create(token: string, authorId: string, dto: CreatePostDto): Promise<PostRow> {
+    // Write-path policy gates (plan Parts 15/17): maintenance, suspension,
+    // then the global+personal post_creation switch. Runs BEFORE any insert,
+    // so a refused request writes nothing.
+    await this.platform.assertNotSuspended(authorId);
+    const isShort = dto.type_id === SHORT_TYPE;
+    await this.platform.assertFeatureAllowed(
+      authorId,
+      'post_creation',
+      ErrorCode.USER_POSTING_RESTRICTED,
+      isShort
+        ? 'Shorts are temporarily unavailable.'
+        : 'Posting is temporarily unavailable.',
+    );
+
     const client = this.supabase.asCaller(token);
     const created = await this.supabase.run<{ id: string }>(
       client

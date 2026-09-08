@@ -29,6 +29,24 @@ export const ErrorCode = {
   UPSTREAM_ERROR: 'UPSTREAM_ERROR',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
+
+  // --- platform controls & moderation (plan "Final platform controls") ---
+  /** Normal app operations are paused by maintenance mode; admins still work. */
+  MAINTENANCE_MODE: 'MAINTENANCE_MODE',
+  /** A global or per-user upload gate refused the request. */
+  UPLOAD_IMAGE_DISABLED: 'UPLOAD_IMAGE_DISABLED',
+  UPLOAD_VIDEO_DISABLED: 'UPLOAD_VIDEO_DISABLED',
+  UPLOAD_SHORTS_DISABLED: 'UPLOAD_SHORTS_DISABLED',
+  /** Post creation is globally off or restricted for this user. */
+  USER_POSTING_RESTRICTED: 'USER_POSTING_RESTRICTED',
+  /** Comments are globally off or restricted for this user. */
+  COMMENTS_DISABLED: 'COMMENTS_DISABLED',
+  /** The acting account is suspended. */
+  USER_SUSPENDED: 'USER_SUSPENDED',
+  /** The content is restricted (stored, not publicly surfaced). */
+  CONTENT_RESTRICTED: 'CONTENT_RESTRICTED',
+  /** The content is removed and no longer available. */
+  CONTENT_REMOVED: 'CONTENT_REMOVED',
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode] | string;

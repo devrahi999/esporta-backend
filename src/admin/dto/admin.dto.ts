@@ -129,6 +129,42 @@ export class ResolveReportDto {
   @IsString() status!: string;
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
+
+// ---- platform controls & per-user restrictions (plan Parts 3/4) ----
+export class AdminRecentPostsQuery {
+  /** ISO timestamps bounding the review window; defaults to last 24h. */
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+  /** all | post | short | image | video */
+  @IsOptional() @IsIn(['all', 'post', 'short', 'image', 'video']) kind?: string;
+  /** all | published | under_review | restricted | removed */
+  @IsOptional() @IsIn(['all', 'published', 'under_review', 'restricted', 'removed']) moderation?: string;
+  @IsOptional() @ToBool() @IsBoolean() reported?: boolean;
+  @IsOptional() @IsString() @MaxLength(200) search?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(10_000) offset?: number;
+}
+export class SetPlatformControlDto {
+  @IsBoolean() enabled!: boolean;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
+  /** Maintenance-only: the message users see on the maintenance screen. */
+  @IsOptional() @IsString() @MaxLength(300) message?: string;
+  /** Maintenance-only: optional estimated return time. */
+  @IsOptional() @IsISO8601() eta?: string;
+}
+export class SetUserRestrictionDto {
+  /** post_creation | upload_images | upload_videos | upload_shorts | comments */
+  @IsIn(['post_creation', 'upload_images', 'upload_videos', 'upload_shorts', 'comments'])
+  feature!: string;
+  @IsBoolean() restricted!: boolean;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
+  /** Null = permanent; a future timestamp makes the restriction temporary. */
+  @IsOptional() @IsISO8601() expiresAt?: string;
+}
+export class SetSuspendedDto {
+  @IsBoolean() suspended!: boolean;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
+}
 export class DecideVerificationDto {
   /**
    * `approve` | `reject` | `not_eligible`. A tri-state, not a boolean: the RPC

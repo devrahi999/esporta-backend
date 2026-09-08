@@ -65,8 +65,22 @@ export class AppException extends HttpException {
     return new AppException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_ERROR, message, details);
   }
 
-  static unavailable(message = 'Service temporarily unavailable.') {
-    return new AppException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SERVICE_UNAVAILABLE, message);
+  static unavailable(message = 'Service temporarily unavailable.', details?: unknown) {
+    return new AppException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SERVICE_UNAVAILABLE, message, details);
+  }
+
+  /**
+   * Maintenance mode (plan Part 3): normal app operations are paused. The
+   * message/eta are the operator's own words from platform_settings, already
+   * phrased for users.
+   */
+  static maintenance(message: string, maintenanceMessage?: string, maintenanceEta?: string) {
+    return new AppException(
+      HttpStatus.SERVICE_UNAVAILABLE,
+      ErrorCode.MAINTENANCE_MODE,
+      message,
+      { maintenanceMessage, maintenanceEta },
+    );
   }
 
   static internal(message = 'Something went wrong.') {

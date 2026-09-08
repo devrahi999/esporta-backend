@@ -6,6 +6,7 @@ import type {
   AdminCommentsQuery,
   AdminNotificationsQuery,
   AdminPostsQuery,
+  AdminRecentPostsQuery,
   AdminRecruitmentsQuery,
   AdminReportsQuery,
   AdminSupportQuery,
@@ -18,7 +19,10 @@ import type {
   ReorderFaqDto,
   ReorderReferenceDto,
   SendNotificationDto,
+  SetPlatformControlDto,
   SetRoleCapabilityDto,
+  SetSuspendedDto,
+  SetUserRestrictionDto,
   UpsertAdminDto,
   UpsertFaqDto,
   UpsertReferenceDto,
@@ -238,4 +242,45 @@ export class AdminService {
     });
   }
   auditDetail(token: string, id: string) { return this.rpc(token, 'admin_audit_detail', { p_entry: id }); }
+
+  // ---- platform controls & per-user restrictions (plan Parts 3/4/5) ----
+  platformControls(token: string) { return this.rpc(token, 'admin_platform_controls'); }
+  setPlatformControl(token: string, key: string, dto: SetPlatformControlDto) {
+    return this.rpc(token, 'admin_set_platform_control', {
+      p_key: key,
+      p_enabled: dto.enabled,
+      p_reason: dto.reason ?? null,
+      p_message: dto.message ?? null,
+      p_eta: dto.eta ?? null,
+    });
+  }
+  userRestrictions(token: string, identity: string) {
+    return this.rpc(token, 'admin_user_restrictions', { p_identity: identity });
+  }
+  setUserRestriction(token: string, identity: string, dto: SetUserRestrictionDto) {
+    return this.rpc(token, 'admin_set_user_restriction', {
+      p_identity: identity,
+      p_feature: dto.feature,
+      p_restricted: dto.restricted,
+      p_reason: dto.reason ?? null,
+      p_expires_at: dto.expiresAt ?? null,
+    });
+  }
+  setSuspended(token: string, identity: string, dto: SetSuspendedDto) {
+    return this.rpc(token, 'admin_set_identity_suspended', {
+      p_identity: identity,
+      p_suspended: dto.suspended,
+      p_reason: dto.reason ?? null,
+    });
+  }
+  /** Today's uploads — post-publication review queue (plan Part 5). */
+  postsRecent(token: string, q: AdminRecentPostsQuery) {
+    return this.rpc(token, 'admin_posts_recent', {
+      p_from: q.from ?? null, p_to: q.to ?? null,
+      p_kind: q.kind ?? null, p_moderation: q.moderation ?? null,
+      p_reported: q.reported ?? null, p_search: q.search ?? null,
+      p_limit: q.limit ?? 50, p_offset: q.offset ?? 0,
+    });
+  }
+  moderationStats(token: string) { return this.rpc(token, 'admin_moderation_stats'); }
 }

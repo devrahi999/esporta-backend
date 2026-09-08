@@ -4,6 +4,8 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { R2Provider } from './providers/r2.provider';
 import { StreamProvider } from './providers/stream.provider';
 import { AppException } from '../common/errors/app-exception';
+import { ErrorCode } from '../common/errors/error-codes';
+import { PlatformPolicyService } from '../platform/platform-policy.service';
 import {
   ALLOWED_IMAGE_MIME,
   MAX_IMAGE_BYTES,
@@ -40,12 +42,24 @@ export class MediaService {
     private readonly supabase: SupabaseService,
     private readonly r2: R2Provider,
     private readonly stream: StreamProvider,
+    private readonly platform: PlatformPolicyService,
   ) {}
 
   async createImageUploadSession(
+    token: string,
     identityId: string,
     dto: CreateImageUploadSessionDto,
   ) {
+    // Upload gates (plan Part 15): a presigned URL is a real upload grant, so
+    // the switch is enforced HERE, not only at complete-time. Global OFF or a
+    // personal restriction refuses before any provider call.
+    await this.platform.assertNotSuspended(identityId);
+    await this.platform.assertFeatureAllowed(
+      identityId,
+      'upload_images',
+      ErrorCode.UPLOAD_IMAGE_DISABLED,
+      'Image uploads are temporarily unavailable.',
+    );
     this.validateCombo(dto.entity_type, dto.slot);
     const key = imageObjectKey(identityId, dto.entity_type, dto.slot, dto.content_type, randomUUID());
     const { url, expiresSeconds } = await this.r2.presignPut(key);
@@ -119,6 +133,31 @@ export class MediaService {
     identityId: string,
     dto: CreateVideoUploadSessionDto,
   ): Promise<{ upload_url: string; uid: string; media_id: string; media: Row }> {
+    // Upload gates BEFORE any provider reservation (plan Part 15): the
+    // direct-upload URL is the actual grant. A session bound to a short post
+    // checks the upload_shorts switch; everything else upload_videos.
+    await this.platform.assertNotSuspended(identityId);
+    let isShortSession = false;
+    if (dto.post_id) {
+      const post = await this.supabase.run<{ type_id: string } | null>(
+        this.supabase
+          .asCaller(token)
+          .from('posts')
+          .select('type_id')
+          .eq('id', dto.post_id)
+          .maybeSingle(),
+      );
+      isShortSession = post?.type_id === 'short';
+    }
+    await this.platform.assertFeatureAllowed(
+      identityId,
+      isShortSession ? 'upload_shorts' : 'upload_videos',
+      isShortSession ? ErrorCode.UPLOAD_SHORTS_DISABLED : ErrorCode.UPLOAD_VIDEO_DISABLED,
+      isShortSession
+        ? 'Shorts are temporarily unavailable.'
+        : 'Video uploads are temporarily unavailable.',
+    );
+
     let maxDuration = dto.max_duration_seconds ?? DEFAULT_VIDEO_MAX_DURATION;
 
     // Server-side enforcement of the short rule. `duration_seconds` is only

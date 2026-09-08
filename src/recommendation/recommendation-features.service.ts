@@ -14,6 +14,7 @@ import type {
   RankingContext,
   RankingInputs,
   ViewerFeatures,
+  ViewerControlEffect,
 } from './core/types';
 import { CANDIDATE_SOURCES } from './core/types';
 import { signalWeightsForSql, type RecommendationConfig } from './config/recommendation-config.schema';
@@ -180,14 +181,23 @@ export class RecommendationFeaturesService
    * Fire-and-forget: a failure to record must not fail the request that already
    * produced a valid page. The cost of a lost write is one item possibly
    * re-shown, which is a far better outcome than a 500.
+   *
+   * `configVersionId` attributes the exposure to the config that produced it —
+   * the join key for per-version exposure analytics and future experiment arms.
    */
-  async recordExposure(viewerId: string, surface: string, postIds: string[]): Promise<void> {
+  async recordExposure(
+    viewerId: string,
+    surface: string,
+    postIds: string[],
+    configVersionId?: string,
+  ): Promise<void> {
     if (postIds.length === 0) return;
     try {
       await this.supabase.rpcAsService('reco_record_exposure', {
         p_viewer_id: viewerId,
         p_surface: surface,
         p_post_ids: postIds,
+        p_config_version_id: configVersionId ?? null,
       });
     } catch (error) {
       this.logger.event('exposure recording failed', {
@@ -298,6 +308,7 @@ export function emptyInputs(): RankingInputs {
     content: {},
     interventions: {},
     exposures: {},
+    viewerControls: { multipliers: {}, exploration: 'default' },
   };
 }
 
@@ -321,7 +332,24 @@ export function parseRankingInputs(raw: unknown, viewerId: string): RankingInput
     content: parseContentMap(doc.content),
     interventions: parseNumberMap(doc.interventions),
     exposures: parseExposures(doc.exposures),
+    viewerControls: parseViewerControls(doc.viewer_controls),
   };
+}
+
+/**
+ * The viewer control effect — per-key multipliers plus a bounded exploration
+ * preference. Defensively tolerant: a missing or malformed section reads as
+ * "no controls", never as a parse failure that would degrade the whole bundle.
+ */
+function parseViewerControls(raw: unknown): ViewerControlEffect {
+  if (!raw || typeof raw !== 'object') {
+    return { multipliers: {}, exploration: 'default' };
+  }
+  const doc = raw as Record<string, unknown>;
+  const multipliers = parseNumberMap(doc.multipliers);
+  const exploration =
+    doc.exploration === 'high' || doc.exploration === 'low' ? doc.exploration : 'default';
+  return { multipliers, exploration };
 }
 
 function parseViewer(raw: unknown, viewerId: string): ViewerFeatures | null {

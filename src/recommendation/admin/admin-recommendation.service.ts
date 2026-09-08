@@ -5,7 +5,11 @@ import { isUuid } from '../../common/utils/uuid';
 import { RecommendationConfigService } from '../recommendation-config.service';
 import { RecommendationFeaturesService } from '../recommendation-features.service';
 import { RecommendationService } from '../recommendation.service';
-import type { RecommendationSurface } from '../config/recommendation-config.schema';
+import {
+  validateRecommendationConfig,
+  type RecommendationConfig,
+  type RecommendationSurface,
+} from '../config/recommendation-config.schema';
 
 /**
  * The admin operations the Phase 2 Recommendation Admin Panel will call.
@@ -122,8 +126,10 @@ export class AdminRecommendationService {
    * Runs the REAL pipeline for a viewer and surface and returns the full slate
    * WITH explanations — the same rows, the same config and the same code the
    * production read uses, so what the debugger explains is what actually
-   * happened. `preview: true` is passed to the config resolution so a DRAFT
-   * version can be dry-run against real data before activation.
+   * happened. DRY-RUN: nothing is recorded to the exposure log.
+   *
+   * `previewConfigVersionId` dry-runs a DRAFT version against real data;
+   * `previewControls` simulates a viewer-control document without applying it.
    */
   async debugRanking(params: {
     actorToken: string;
@@ -131,15 +137,75 @@ export class AdminRecommendationService {
     surface: RecommendationSurface;
     limit: number;
     previewConfigVersionId?: string;
+    query?: string;
+    previewControls?: {
+      multipliers: Record<string, number>;
+      exploration: 'low' | 'default' | 'high';
+    };
   }): Promise<unknown> {
     await this.requireCap(params.actorToken, CAP_DEBUG);
     if (!isUuid(params.viewerId)) throw AppException.validation('Invalid viewer id.');
+
+    let previewConfig: {
+      config: RecommendationConfig;
+      versionId: string;
+      versionLabel: string;
+    } | undefined;
+    if (params.previewConfigVersionId) {
+      if (!isUuid(params.previewConfigVersionId)) {
+        throw AppException.validation('Invalid preview version id.');
+      }
+      const version = (await this.config.version(params.previewConfigVersionId)) as {
+        id?: string;
+        version_label?: string;
+        config?: unknown;
+      };
+      const validation = validateRecommendationConfig(version.config);
+      if (!validation.valid || !validation.config) {
+        throw AppException.unprocessable(
+          'That version no longer satisfies the current schema and cannot be previewed.',
+          undefined,
+          { issues: validation.issues },
+        );
+      }
+      previewConfig = {
+        config: validation.config,
+        versionId: version.id ?? params.previewConfigVersionId,
+        versionLabel: version.version_label ?? 'preview',
+      };
+    }
+
+    // Search debug runs the lexical layer first (as production does), then
+    // ranks the matched ids.
+    let relevance: Map<string, number> | undefined;
+    let restrictTo: string[] | undefined;
+    if (params.surface === 'search') {
+      const q = (params.query ?? '').trim();
+      if (!q) throw AppException.validation('Query "q" is required for the search surface.');
+      const lexical = await this.supabase.rpcAsCaller<
+        Array<{ id: string; score: number | string }> | null
+      >(params.actorToken, 'search_post_ids', {
+        q,
+        max_rows: Math.max(params.limit, 50),
+      });
+      const matches = (lexical ?? []).map((r) => ({
+        id: r.id,
+        score: typeof r.score === 'number' ? r.score : Number(r.score) || 0,
+      }));
+      relevance = new Map(matches.map((m) => [m.id, m.score]));
+      restrictTo = matches.map((m) => m.id);
+    }
 
     const slate = await this.ranking.rank({
       viewerId: params.viewerId,
       surface: params.surface,
       limit: params.limit,
       includeExplanations: true,
+      dryRun: true,
+      relevance,
+      restrictTo,
+      previewConfig,
+      previewControls: params.previewControls,
     });
 
     return {
@@ -148,6 +214,7 @@ export class AdminRecommendationService {
       fallbackReason: slate.fallbackReason,
       postIds: slate.postIds,
       explanations: slate.explanations ?? {},
+      dropped: slate.dropped ?? [],
     };
   }
 
@@ -293,6 +360,225 @@ export class AdminRecommendationService {
     });
   }
 
+  // ------------------------------------------------- Phase 2 analytics reads
+
+  async exposureOverview(
+    actorToken: string,
+    from: string,
+    to: string,
+    surface?: string,
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    const { fromDate, toDate } = this.validWindow(from, to);
+    return this.supabase.rpcAsService('reco_exposure_overview', {
+      p_from: fromDate,
+      p_to: toDate,
+      p_surface: surface ?? null,
+    });
+  }
+
+  async exposureTopPosts(
+    actorToken: string,
+    q: { from: string; to: string; surface?: string; kind?: string; limit?: number; offset?: number },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    const { fromDate, toDate } = this.validWindow(q.from, q.to);
+    return this.supabase.rpcAsService('reco_exposure_top_posts', {
+      p_from: fromDate,
+      p_to: toDate,
+      p_surface: q.surface ?? null,
+      p_kind: q.kind ?? 'all',
+      p_limit: q.limit ?? 25,
+      p_offset: q.offset ?? 0,
+    });
+  }
+
+  async exposureTopCreators(
+    actorToken: string,
+    q: { from: string; to: string; surface?: string; limit?: number; offset?: number },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    const { fromDate, toDate } = this.validWindow(q.from, q.to);
+    return this.supabase.rpcAsService('reco_exposure_top_creators', {
+      p_from: fromDate,
+      p_to: toDate,
+      p_surface: q.surface ?? null,
+      p_limit: q.limit ?? 25,
+      p_offset: q.offset ?? 0,
+    });
+  }
+
+  async exposureTopGames(
+    actorToken: string,
+    q: { from: string; to: string; surface?: string; limit?: number },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    const { fromDate, toDate } = this.validWindow(q.from, q.to);
+    return this.supabase.rpcAsService('reco_exposure_top_games', {
+      p_from: fromDate,
+      p_to: toDate,
+      p_surface: q.surface ?? null,
+      p_limit: q.limit ?? 25,
+    });
+  }
+
+  async contentStats(
+    actorToken: string,
+    q: { search?: string; kind?: string; status?: string; sort?: string; limit?: number; offset?: number },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    return this.supabase.rpcAsService('reco_content_stats', {
+      p_search: q.search ?? null,
+      p_kind: q.kind ?? 'all',
+      p_status: q.status ?? 'all',
+      p_sort: q.sort ?? 'exposure',
+      p_limit: q.limit ?? 25,
+      p_offset: q.offset ?? 0,
+    });
+  }
+
+  async postExposureHistory(actorToken: string, postId: string, days?: number): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    if (!isUuid(postId)) throw AppException.validation('Invalid post id.');
+    return this.supabase.rpcAsService('reco_post_exposure_history', {
+      p_post_id: postId,
+      p_days: days ?? 30,
+    });
+  }
+
+  async usersOverview(
+    actorToken: string,
+    q: { search?: string; coldStart?: string; limit?: number; offset?: number },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    return this.supabase.rpcAsService('reco_users_overview', {
+      p_search: q.search ?? null,
+      p_cold_start: q.coldStart ?? 'all',
+      p_limit: q.limit ?? 25,
+      p_offset: q.offset ?? 0,
+    });
+  }
+
+  async identityStats(actorToken: string, identityId: string, days?: number): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    if (!isUuid(identityId)) throw AppException.validation('Invalid identity id.');
+    return this.supabase.rpcAsService('reco_identity_stats', {
+      p_identity_id: identityId,
+      p_days: days ?? 30,
+    });
+  }
+
+  // -------------------------------------------------- viewer control writes
+
+  async setViewerControls(
+    actorToken: string,
+    actorUserId: string,
+    dto: {
+      identityId: string;
+      surface?: 'feed' | 'shorts' | 'search' | null;
+      controls: unknown;
+      reason: string;
+      expiresAt: string;
+    },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_MANAGE);
+    if (!isUuid(dto.identityId)) throw AppException.validation('Invalid identity id.');
+    const expiry = new Date(dto.expiresAt);
+    if (Number.isNaN(expiry.getTime())) {
+      throw AppException.validation('expiresAt must be an ISO timestamp.');
+    }
+    return this.supabase.rpcAsService('reco_viewer_controls_set', {
+      p_identity_id: dto.identityId,
+      p_surface: dto.surface ?? null,
+      p_controls: dto.controls,
+      p_reason: dto.reason,
+      p_expires_at: expiry.toISOString(),
+      p_actor: actorUserId,
+    });
+  }
+
+  async revokeViewerControls(
+    actorToken: string,
+    actorUserId: string,
+    identityId: string,
+    surface: 'feed' | 'shorts' | 'search' | null,
+    note?: string,
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_MANAGE);
+    if (!isUuid(identityId)) throw AppException.validation('Invalid identity id.');
+    return this.supabase.rpcAsService('reco_viewer_controls_revoke', {
+      p_identity_id: identityId,
+      p_surface: surface,
+      p_actor: actorUserId,
+      p_note: note ?? null,
+    });
+  }
+
+  async getViewerControls(actorToken: string, identityId: string, surface: string): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    if (!isUuid(identityId)) throw AppException.validation('Invalid identity id.');
+    return this.supabase.rpcAsService('reco_viewer_controls_get', {
+      p_identity_id: identityId,
+      p_surface: surface,
+    });
+  }
+
+  // ------------------------------------------------------------- experiments
+
+  async listExperiments(actorToken: string): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_VIEW);
+    return this.supabase.rpcAsService('reco_experiments_list');
+  }
+
+  async createExperiment(
+    actorToken: string,
+    actorUserId: string,
+    dto: {
+      name: string;
+      description?: string;
+      surface: 'feed' | 'shorts' | 'search';
+      variantVersionId: string;
+      variantPercent: number;
+    },
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_MANAGE);
+    if (!isUuid(dto.variantVersionId)) {
+      throw AppException.validation('Invalid variant version id.');
+    }
+    return this.supabase.rpcAsService('reco_experiment_create', {
+      p_name: dto.name,
+      p_description: dto.description ?? null,
+      p_surface: dto.surface,
+      p_variant_version_id: dto.variantVersionId,
+      p_variant_percent: dto.variantPercent,
+      p_actor: actorUserId,
+    });
+  }
+
+  async startExperiment(actorToken: string, actorUserId: string, experimentId: string): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_MANAGE);
+    if (!isUuid(experimentId)) throw AppException.validation('Invalid experiment id.');
+    return this.supabase.rpcAsService('reco_experiment_start', {
+      p_experiment_id: experimentId,
+      p_actor: actorUserId,
+    });
+  }
+
+  async stopExperiment(
+    actorToken: string,
+    actorUserId: string,
+    experimentId: string,
+    reason?: string,
+  ): Promise<unknown> {
+    await this.requireCap(actorToken, CAP_MANAGE);
+    if (!isUuid(experimentId)) throw AppException.validation('Invalid experiment id.');
+    return this.supabase.rpcAsService('reco_experiment_stop', {
+      p_experiment_id: experimentId,
+      p_actor: actorUserId,
+      p_reason: reason ?? null,
+    });
+  }
+
   /**
    * Triggers the feature rebuild (§38). Same code the cron uses, callable by an
    * operator after a config change that should apply before the next schedule.
@@ -316,5 +602,34 @@ export class AdminRecommendationService {
    */
   private async requireCap(token: string, cap: string): Promise<void> {
     await this.supabase.rpcAsCaller(token, 'admin_require', { cap });
+  }
+
+  /**
+   * Validates and bounds a date window: ISO dates (YYYY-MM-DD), from ≤ to,
+   * window ≤ 366 days, `to` not in the future. The bound is what keeps an
+   * analytics query from scanning an unbounded series.
+   */
+  private validWindow(from: string, to: string): { fromDate: string; toDate: string } {
+    const fromPattern = /^\d{4}-\d{2}-\d{2}$/;
+    if (!fromPattern.test(from) || !fromPattern.test(to)) {
+      throw AppException.validation('from and to must be ISO dates (YYYY-MM-DD).');
+    }
+    const fromDate = new Date(`${from}T00:00:00Z`);
+    const toDate = new Date(`${to}T00:00:00Z`);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw AppException.validation('from and to must be valid dates.');
+    }
+    if (fromDate > toDate) {
+      throw AppException.validation('from must not be after to.');
+    }
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (toDate > today) {
+      throw AppException.validation('to must not be in the future.');
+    }
+    if ((toDate.getTime() - fromDate.getTime()) / 86_400_000 > 366) {
+      throw AppException.validation('The window cannot exceed 366 days.');
+    }
+    return { fromDate: from, toDate: to };
   }
 }

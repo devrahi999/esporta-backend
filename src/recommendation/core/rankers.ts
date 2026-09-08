@@ -123,7 +123,12 @@ abstract class BaseRanker implements Ranker {
       inputs,
     );
 
-    const total = clamp(organic * penaltyMultiplier * interventionMultiplier);
+    // The viewer's temporary admin-set control (Phase 2) — same multiplicative
+    // channel as interventions, so it composes with them inside the SAME clamp
+    // band and can never out-power policy. Keyed on the candidate's topics.
+    const controlMultiplier = this.viewerControlFor(ctx, content, inputs);
+
+    const total = clamp(organic * penaltyMultiplier * interventionMultiplier * controlMultiplier);
 
     const explanation: ScoreExplanation = {
       total: round(total),
@@ -137,6 +142,7 @@ abstract class BaseRanker implements Ranker {
           .map(([k, v]) => [k, round(v)]),
       ),
       interventionMultiplier: round(interventionMultiplier),
+      viewerControlMultiplier: controlMultiplier !== 1 ? round(controlMultiplier) : undefined,
       exploration: false,
       source: candidate.source,
     };
@@ -213,6 +219,36 @@ abstract class BaseRanker implements Ranker {
     const identity = inputs.interventions[`identity:${authorId}`] ?? 1;
     const { interventionMin, interventionMax } = ctx.config.shared.safety;
     return clamp(post * identity, interventionMin, interventionMax);
+  }
+
+  /**
+   * The viewer-control multiplier for one candidate, composed from the
+   * candidate's own topic keys (game / content type / author identity).
+   *
+   * Multiple matching keys multiply, then clamp to the SAME intervention band
+   * as {@link interventionFor} — a viewer control is deliberately incapable of
+   * exceeding what a global intervention may do, no matter how many keys the
+   * admin combines. Returns 1 (no effect) when the viewer has no active
+   * controls, which is the overwhelmingly common case.
+   */
+  protected viewerControlFor(
+    ctx: RankingContext,
+    content: ContentFeatures,
+    inputs: RankingInputs,
+  ): number {
+    const multipliers = inputs.viewerControls.multipliers;
+    if (Object.keys(multipliers).length === 0) return 1;
+
+    let composed = 1;
+    if (content.gameId) {
+      composed *= multipliers[`game:${content.gameId}`] ?? 1;
+    }
+    composed *= multipliers[`content_type:${content.typeId}`] ?? 1;
+    composed *= multipliers[`identity:${content.authorId}`] ?? 1;
+    if (composed === 1) return 1;
+
+    const { interventionMin, interventionMax } = ctx.config.shared.safety;
+    return clamp(composed, interventionMin, interventionMax);
   }
 
   // ------------------------------------------------------------ shared signals
@@ -520,6 +556,7 @@ export function applyExploration(
   scored: ScoredCandidate[],
   targetCount: number,
   isColdStart: boolean,
+  inputs?: RankingInputs,
 ): ScoredCandidate[] {
   const exploration =
     ctx.surface === 'feed'
@@ -529,7 +566,16 @@ export function applyExploration(
         : null;
   if (!exploration || scored.length === 0) return scored;
 
-  const ratio = isColdStart ? exploration.coldStartRatio : exploration.ratio;
+  let ratio = isColdStart ? exploration.coldStartRatio : exploration.ratio;
+
+  // A viewer-control exploration preference (Phase 2) scales the configured
+  // ratio within its schema bounds — 'high' doubles it (still ≤ the 0.4 cap on
+  // normal viewers, ≤ 0.8 for cold-start), 'low' halves it. The control can
+  // modulate the dial but never move it past what the active config allows.
+  const preference = inputs?.viewerControls.exploration;
+  if (preference === 'high') ratio = Math.min(ratio * 2, isColdStart ? 0.8 : 0.4);
+  if (preference === 'low') ratio = ratio / 2;
+
   const slots = Math.floor(targetCount * clamp(ratio, 0, 0.8));
   if (slots <= 0) return scored;
 

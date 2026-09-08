@@ -28,8 +28,12 @@ export class MediaController {
   constructor(private readonly media: MediaService) {}
 
   @Post('images/upload-session')
-  createSession(@ActiveProfileId() me: string, @Body() dto: CreateImageUploadSessionDto) {
-    return this.media.createImageUploadSession(me, dto);
+  createSession(
+    @AccessToken() token: string,
+    @ActiveProfileId() me: string,
+    @Body() dto: CreateImageUploadSessionDto,
+  ) {
+    return this.media.createImageUploadSession(token, me, dto);
   }
 
   @Post('images/complete')

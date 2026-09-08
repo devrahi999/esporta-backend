@@ -4,9 +4,10 @@ import { MediaService } from './media.service';
 import { R2Provider } from './providers/r2.provider';
 import { StreamProvider } from './providers/stream.provider';
 import { AuthModule } from '../auth/auth.module';
+import { PlatformModule } from '../platform/platform.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, PlatformModule],
   controllers: [MediaController],
   providers: [MediaService, R2Provider, StreamProvider],
   exports: [MediaService, R2Provider, StreamProvider],

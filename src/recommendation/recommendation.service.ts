@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
+import { SupabaseService } from '../supabase/supabase.service';
 import { AppLogger } from '../common/logger/app-logger';
 import { RecommendationConfigService } from './recommendation-config.service';
 import { RecommendationFeaturesService } from './recommendation-features.service';
@@ -7,6 +8,7 @@ import { DiversityReranker } from './core/reranker';
 import { FeedRanker, ShortsRanker, SearchRanker, applyExploration } from './core/rankers';
 import { IdentitySearchRanker } from './core/identity-search-ranker';
 import { stableUnitInterval, timeBucket } from './core/scoring';
+import { validateRecommendationConfig } from './config/recommendation-config.schema';
 import {
   MAX_SLATE_SIZE,
   advanceCursor,
@@ -21,8 +23,9 @@ import type {
   RankingContext,
   ScoreExplanation,
   ScoredCandidate,
+  ViewerControlEffect,
 } from './core/types';
-import type { RecommendationSurface } from './config/recommendation-config.schema';
+import type { RecommendationConfig, RecommendationSurface } from './config/recommendation-config.schema';
 
 /** What a surface gets back: the ordered ids, the next cursor, and telemetry. */
 export interface RankedSlate {
@@ -36,6 +39,12 @@ export interface RankedSlate {
   meta: RankedSlateMeta;
   /** Score breakdowns, only populated when explicitly requested (admin/debug). */
   explanations?: Record<string, ScoreExplanation>;
+  /**
+   * Candidates the pipeline considered and excluded, with the rule that
+   * excluded them — the debugger's "why is this NOT recommended" answer.
+   * Only populated for debug callers (includeExplanations).
+   */
+  dropped?: Array<{ postId: string; reason: string }>;
 }
 
 export interface RankedSlateMeta {
@@ -66,6 +75,27 @@ export interface RankRequest {
   includeExplanations?: boolean;
   /** Test seam: pinned so ranking is reproducible. */
   nowMs?: number;
+  /**
+   * Admin/debug: run with this config instead of the active one — the draft
+   * dry-run / "what would change" path. Production callers never set it.
+   */
+  previewConfig?: {
+    config: RecommendationConfig;
+    versionId: string;
+    versionLabel: string;
+  };
+  /**
+   * Admin/debug: simulate these viewer controls instead of the live ones —
+   * the "preview feed for user with this intervention" path. The simulation
+   * has no side effects: nothing is recorded, nothing is applied.
+   */
+  previewControls?: ViewerControlEffect;
+  /**
+   * Skips exposure recording. Set for every debug/preview call: a debugger
+   * that polluted the viewer's repetition state would show different results
+   * on every run, which defeats its purpose.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -92,6 +122,7 @@ export class RecommendationService {
     private readonly configService: RecommendationConfigService,
     private readonly features: RecommendationFeaturesService,
     private readonly appConfig: AppConfigService,
+    private readonly supabase: SupabaseService,
   ) {}
 
   /** Whether a surface has ranking switched on in the active config. */
@@ -213,7 +244,27 @@ export class RecommendationService {
   async rank(request: RankRequest): Promise<RankedSlate> {
     const started = Date.now();
     const nowMs = request.nowMs ?? started;
-    const { config, versionId, versionLabel } = await this.configService.active();
+    const active = await this.configService.active();
+
+    // A debug/preview call may substitute a config (draft dry-run) or simulate
+    // viewer controls. The preview path changes ONLY what this request sees —
+    // exposure attribution still records the ACTIVE version, and a dryRun
+    // request records nothing at all.
+    let resolved = request.previewConfig ?? active;
+
+    // Experiment allocation (Phase 2): a RUNNING experiment on this surface
+    // deterministically assigns the viewer to control or variant, and the
+    // variant arm ranks with the experiment's config version. Explicit preview
+    // configs bypass allocation — a debugger asking "what would draft X do"
+    // wants exactly that answer, not an arm's coin flip.
+    if (!request.previewConfig && !request.dryRun) {
+      const arm = await this.experimentArmFor(request.viewerId, request.surface, active.versionId);
+      if (arm) {
+        resolved = arm;
+      }
+    }
+
+    const { config, versionId, versionLabel } = resolved;
 
     const surfaceConfig = config[request.surface];
     if (!surfaceConfig.enabled) {
@@ -282,15 +333,33 @@ export class RecommendationService {
       ctx,
       candidates.map((c) => c.postId),
     );
+    // A simulated control replaces the live one for this request only.
+    if (request.previewControls) {
+      inputs.viewerControls = request.previewControls;
+    }
 
     const { kept, dropped } = this.features.filter(ctx, candidates, inputs);
     if (kept.length === 0) {
-      return this.fallbackSlate(request, versionId, versionLabel, 'no_eligible', started, cursorRejected);
+      const slate = this.fallbackSlate(request, versionId, versionLabel, 'no_eligible', started, cursorRejected);
+      if (request.includeExplanations) slate.dropped = dropped;
+      return slate;
     }
     candidates = kept;
 
     const ranker = this.rankerFor(request);
     let scored = ranker.score(ctx, candidates, inputs);
+
+    // A candidate with a feature row that the ranker skipped ("features not
+    // computed yet" reads as absence, not a zero score) is surfaced as a
+    // dropped reason for the debugger.
+    if (request.includeExplanations) {
+      const scoredIds = new Set(scored.map((s) => s.postId));
+      for (const candidate of candidates) {
+        if (!scoredIds.has(candidate.postId)) {
+          dropped.push({ postId: candidate.postId, reason: 'features_missing' });
+        }
+      }
+    }
 
     // A configured score floor. 0 by default, so with a small catalogue nothing
     // is filtered — the option exists for a mature one.
@@ -299,7 +368,16 @@ export class RecommendationService {
       const above = scored.filter((item) => item.score >= minScore);
       // Never let the floor empty the slate: an empty feed is worse than a
       // mediocre one, so the floor is skipped when it would remove everything.
-      if (above.length > 0) scored = above;
+      if (above.length > 0 && above.length < scored.length) {
+        if (request.includeExplanations) {
+          for (const item of scored) {
+            if (item.score < minScore) {
+              dropped.push({ postId: item.postId, reason: 'below_min_score' });
+            }
+          }
+        }
+        scored = above;
+      }
     }
 
     const coldStart = inputs.viewer?.isColdStart ?? true;
@@ -312,7 +390,7 @@ export class RecommendationService {
     // item participate in the diversity window like any other, whereas
     // exploring after re-ranking could reintroduce the very clustering diversity
     // just removed.
-    const explored = applyExploration(ctx, scored, slateTarget, coldStart);
+    const explored = applyExploration(ctx, scored, slateTarget, coldStart, inputs);
     const finalOrder = this.reranker.rerank(ctx, explored, inputs);
 
     const slateIds = finalOrder.slice(0, slateTarget).map((item) => item.postId);
@@ -330,7 +408,17 @@ export class RecommendationService {
     const pageIds = pageFromCursor(cursor, request.limit);
     const next = advanceCursor(cursor, pageIds.length);
 
-    void this.features.recordExposure(request.viewerId, request.surface, pageIds);
+    // Dry-run (debug/preview) requests record nothing: a debugger that wrote
+    // to the viewer's exposure log would change the viewer's real repetition
+    // state and show different results on every run.
+    if (!request.dryRun) {
+      void this.features.recordExposure(
+        request.viewerId,
+        request.surface,
+        pageIds,
+        versionId,
+      );
+    }
 
     this.logRanking(ctx, {
       candidateCount,
@@ -361,6 +449,7 @@ export class RecommendationService {
       explanations: request.includeExplanations
         ? explanationsFor(finalOrder, slateIds)
         : undefined,
+      dropped: request.includeExplanations ? dropped : undefined,
     };
   }
 
@@ -399,7 +488,12 @@ export class RecommendationService {
     }
 
     const next = advanceCursor(cursor, pageIds.length);
-    void this.features.recordExposure(request.viewerId, request.surface, pageIds);
+    void this.features.recordExposure(
+      request.viewerId,
+      request.surface,
+      pageIds,
+      cursor.cv,
+    );
 
     return {
       postIds: pageIds,
@@ -428,6 +522,75 @@ export class RecommendationService {
         return new SearchRanker(request.relevance ?? new Map());
       default:
         return new FeedRanker();
+    }
+  }
+
+  /**
+   * Resolves the viewer's experiment arm for a surface, if a RUNNING
+   * experiment exists there.
+   *
+   * Allocation is DETERMINISTIC (hash of experiment+viewer), computed in the
+   * database — the same `reco_experiment_arm` the admin surface reports, so
+   * what the debugger says about an arm is what actually allocated. Failure is
+   * non-fatal by design: a broken experiment read must degrade to the active
+   * config (control behaviour), never take the surface down.
+   *
+   * Returns null for control (rank with the active config) — no allocation
+   * table is kept, so control is simply the absence of a variant.
+   */
+  private async experimentArmFor(
+    viewerId: string,
+    surface: RecommendationSurface,
+    activeVersionId: string,
+  ): Promise<{ config: RecommendationConfig; versionId: string; versionLabel: string } | null> {
+    try {
+      const experiments = await this.supabase.rpcAsService<Array<{
+        id: string;
+        surface: string;
+        variant_version_id: string;
+      }> | null>('reco_experiments_running', { p_surface: surface });
+      const running = (experiments ?? []).filter(
+        // The one-running-per-surface rule is enforced at start; this filter is
+        // the belt to that braces for rows written before the rule existed.
+        (e) => e.surface === surface && e.variant_version_id !== activeVersionId,
+      );
+      if (running.length === 0) return null;
+
+      const arms = await Promise.all(
+        running.map((experiment) =>
+          this.supabase.rpcAsService<string>('reco_experiment_arm', {
+            p_experiment_id: experiment.id,
+            p_viewer_id: viewerId,
+          }),
+        ),
+      );
+      const variantIndex = arms.findIndex((arm) => arm === 'variant');
+      if (variantIndex === -1) return null;
+
+      const version = await this.supabase.rpcAsService<{
+        id: string;
+        version_label: string;
+        config: unknown;
+      } | null>('reco_config_version', {
+        p_version_id: running[variantIndex].variant_version_id,
+      });
+      if (!version) return null;
+
+      const validation = validateRecommendationConfig(version.config);
+      if (!validation.valid || !validation.config) return null;
+      return {
+        config: validation.config,
+        versionId: version.id,
+        versionLabel: version.version_label,
+      };
+    } catch (error) {
+      this.logger.event('experiment allocation failed; using control', {
+        context: 'Recommendation',
+        errorCode: 'EXPERIMENT_ALLOC_FAILED',
+        surface,
+        reason: error instanceof Error ? error.message : 'unknown',
+      });
+      return null;
     }
   }
 

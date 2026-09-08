@@ -6,6 +6,7 @@ import type {
   RankingContext,
   RankingInputs,
   ScoredCandidate,
+  ViewerControlEffect,
 } from './types';
 
 /**
@@ -85,6 +86,7 @@ function inputs(contentByPost: Record<string, ContentFeatures>, extra: Partial<R
     content: contentByPost,
     interventions: {},
     exposures: {},
+    viewerControls: { multipliers: {}, exploration: 'default' },
     ...extra,
   };
 }
@@ -130,6 +132,73 @@ describe('FeedRanker', () => {
     expect(components.identityAffinity).toBeDefined();
     expect(components.interest).toBeDefined();
     expect(components.identityAffinity).not.toBe(components.interest);
+  });
+
+  it('applies a viewer-control game boost multiplicatively and reports it in the explanation', () => {
+    // Both games are equally unknown to the viewer (no topic affinity), so the
+    // two posts have IDENTICAL organic scores — only the control separates them.
+    const boosted = content('boosted', STRANGER, { gameId: 'valorant' });
+    const plain = content('plain', STRANGER, { gameId: 'bgmi' });
+    const scored = new FeedRanker().score(
+      ctx(),
+      [candidate('boosted'), candidate('plain')],
+      inputs({ boosted, plain }, {
+        viewerControls: {
+          multipliers: { 'game:valorant': 1.5 },
+          exploration: 'default',
+        },
+      }),
+    );
+    const byId = new Map(scored.map((s) => [s.postId, s]));
+    expect(byId.get('boosted')!.explanation.viewerControlMultiplier).toBe(1.5);
+    expect(byId.get('plain')!.explanation.viewerControlMultiplier).toBeUndefined();
+    // Equal organic scores; only the control separates them.
+    expect(byId.get('boosted')!.score).toBeGreaterThan(byId.get('plain')!.score);
+    // Organic is preserved — the control adjusts, it does not rewrite.
+    expect(byId.get('boosted')!.explanation.organic).toBe(
+      byId.get('plain')!.explanation.organic,
+    );
+  });
+
+  it('stacking viewer-control keys stays inside the intervention clamp band', () => {
+    const item = content('stacked', STRANGER, { gameId: 'valorant', typeId: 'short' });
+    const scored = new FeedRanker().score(
+      ctx(),
+      [candidate('stacked')],
+      inputs({ stacked: item }, {
+        viewerControls: {
+          // 3 × 3 would be 9 — far past the safety.interventionMax clamp of 3.
+          multipliers: { 'game:valorant': 3, 'content_type:short': 3 },
+          exploration: 'default',
+        },
+      }),
+    );
+    expect(scored[0].explanation.viewerControlMultiplier).toBeLessThanOrEqual(3);
+    // The raw composition is unclamped; the applied value must respect the band
+    // via the total = clamp(organic × ... × control) — organic ≤ 1 ensures it.
+    expect(scored[0].score).toBeLessThanOrEqual(1);
+  });
+
+  it('a viewer-control suppression demotes matching content without hiding it', () => {
+    // Equal-organic fixture: both games unknown to the viewer.
+    const suppressed = content('suppressed', STRANGER, { gameId: 'freefire' });
+    const plain = content('plain', STRANGER, { gameId: 'bgmi' });
+    const scored = new FeedRanker().score(
+      ctx(),
+      [candidate('suppressed'), candidate('plain')],
+      inputs({ suppressed, plain }, {
+        viewerControls: {
+          multipliers: { 'game:freefire': 0.5 },
+          exploration: 'default',
+        },
+      }),
+    );
+    const byId = new Map(scored.map((s) => [s.postId, s]));
+    expect(byId.get('suppressed')!.explanation.viewerControlMultiplier).toBe(0.5);
+    // 0.5× organic (organic ≤ 1) is a demotion, never a zero — suppression
+    // cannot hide content, only reorder it.
+    expect(byId.get('suppressed')!.score).toBeGreaterThan(0);
+    expect(byId.get('suppressed')!.score).toBeLessThan(byId.get('plain')!.score);
   });
 
   it('demotes a negatively-affined author below a stranger — negative affinity demotes', () => {
@@ -456,5 +525,40 @@ describe('applyExploration (§15, §35)', () => {
   it('does nothing on the search surface — search stays query-driven', () => {
     const result = applyExploration(ctx({ surface: 'search' }), flatItems(50), 20, false);
     expect(result).toEqual(flatItems(50));
+  });
+
+  it('a high viewer-control exploration preference scales exploration up, within the cap', () => {
+    const withControls = (controls: ViewerControlEffect) =>
+      inputs({}, { viewerControls: controls });
+    const normal = applyExploration(
+      ctx(),
+      flatItems(50),
+      20,
+      false,
+      withControls({ multipliers: {}, exploration: 'default' }),
+    ).filter((i) => i.explanation.exploration).length;
+    const boosted = applyExploration(
+      ctx(),
+      flatItems(50),
+      20,
+      false,
+      withControls({ multipliers: {}, exploration: 'high' }),
+    ).filter((i) => i.explanation.exploration).length;
+    expect(boosted).toBeGreaterThan(normal);
+    // The 0.4 schema cap still holds: 20 slots × 0.4 = 8 max.
+    expect(boosted).toBeLessThanOrEqual(8);
+  });
+
+  it('a low viewer-control exploration preference scales exploration down', () => {
+    const normal = applyExploration(ctx(), flatItems(50), 20, false)
+      .filter((i) => i.explanation.exploration).length;
+    const reduced = applyExploration(
+      ctx(),
+      flatItems(50),
+      20,
+      false,
+      inputs({}, { viewerControls: { multipliers: {}, exploration: 'low' } }),
+    ).filter((i) => i.explanation.exploration).length;
+    expect(reduced).toBeLessThanOrEqual(normal);
   });
 });

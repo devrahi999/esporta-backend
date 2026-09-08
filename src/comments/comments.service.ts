@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AppException } from '../common/errors/app-exception';
+import { ErrorCode } from '../common/errors/error-codes';
 import { clampLimit } from '../common/dto/pagination.dto';
+import { PlatformPolicyService } from '../platform/platform-policy.service';
 
 const COMMENT_COLUMNS = `
   id, post_id, author_id, parent_id, body, created_at, edited_at,
@@ -17,7 +19,10 @@ type CommentRow = Record<string, unknown> & { id: string };
  */
 @Injectable()
 export class CommentsService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly platform: PlatformPolicyService,
+  ) {}
 
   async forPost(token: string, viewerId: string, postId: string, limit?: number): Promise<CommentRow[]> {
     const take = clampLimit(limit, 100, 200);
@@ -40,6 +45,17 @@ export class CommentsService {
     body: string,
     parentId?: string,
   ): Promise<CommentRow> {
+    // Policy gates (plan Parts 15/17): comments switch + suspension, before
+    // any insert. Reports/notifications stay untouched — only the write path
+    // that creates user-visible content is gated.
+    await this.platform.assertNotSuspended(authorId);
+    await this.platform.assertFeatureAllowed(
+      authorId,
+      'comments',
+      ErrorCode.COMMENTS_DISABLED,
+      'Comments are temporarily unavailable.',
+    );
+
     const client = this.supabase.asCaller(token);
     return this.supabase.run<CommentRow>(
       client

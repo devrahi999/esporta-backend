@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -121,4 +122,185 @@ export class RevokeInterventionDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+}
+
+// ------------------------------------------------------------------ Phase 2
+
+/** Date-range query for exposure analytics. Bounded to a 366-day window. */
+export class WindowQueryDto {
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from must be an ISO date (YYYY-MM-DD).' })
+  from!: string;
+
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to must be an ISO date (YYYY-MM-DD).' })
+  to!: string;
+
+  @IsOptional()
+  @IsIn(['feed', 'shorts', 'search'])
+  surface?: 'feed' | 'shorts' | 'search';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  offset?: number;
+}
+
+export class TopPostsQueryDto extends WindowQueryDto {
+  @IsOptional()
+  @IsIn(['all', 'post', 'short'])
+  kind?: 'all' | 'post' | 'short';
+}
+
+export class ContentStatsQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(['all', 'post', 'short'])
+  kind?: 'all' | 'post' | 'short';
+
+  @IsOptional()
+  @IsIn(['all', 'eligible', 'ineligible'])
+  status?: 'all' | 'eligible' | 'ineligible';
+
+  @IsOptional()
+  @IsIn(['exposure', 'quality', 'impressions', 'newest'])
+  sort?: 'exposure' | 'quality' | 'impressions' | 'newest';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  offset?: number;
+}
+
+export class UsersOverviewQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(['all', 'true', 'false'])
+  coldStart?: 'all' | 'true' | 'false';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(10_000)
+  offset?: number;
+}
+
+export class DaysQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  days?: number;
+}
+
+export class ViewerControlsDto {
+  @IsUUID()
+  identityId!: string;
+
+  /** null/omitted = the control applies to every surface. */
+  @IsOptional()
+  @IsIn(['feed', 'shorts', 'search'])
+  surface?: 'feed' | 'shorts' | 'search';
+
+  /**
+   * The controls document: { boosts, suppress, exploration }. Shaped like an
+   * object here; the DATABASE validates every key, band and dimension — the
+   * same validator the ranker path relies on.
+   */
+  @IsObject()
+  controls!: Record<string, unknown>;
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason!: string;
+
+  @IsISO8601()
+  expiresAt!: string;
+}
+
+export class RevokeViewerControlsDto {
+  @IsUUID()
+  identityId!: string;
+
+  @IsOptional()
+  @IsIn(['feed', 'shorts', 'search'])
+  surface?: 'feed' | 'shorts' | 'search';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class CreateExperimentDto {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(100)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+
+  @IsIn(['feed', 'shorts', 'search'])
+  surface!: 'feed' | 'shorts' | 'search';
+
+  @IsUUID()
+  variantVersionId!: string;
+
+  /** Variant share of eligible viewers; the DB enforces 1–50. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  variantPercent!: number;
+}
+
+export class ExperimentIdDto {
+  @IsUUID()
+  experimentId!: string;
+}
+
+export class StopExperimentDto extends ExperimentIdDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
