@@ -23,6 +23,7 @@ export type EmailTemplateName =
   | 'recovery_otp'
   | 'login_code'
   | 'new_device'
+  | 'security_alert'
   | 'account_recovery_otp';
 
 export interface Composed {
@@ -377,6 +378,25 @@ export class EmailService {
               `<div style="color:${MUTED};font-size:14px;line-height:1.65;margin-top:18px;">If this was you, no action is needed. If not, open <b style="color:${TEXT};">Security &rarr; Logged-in devices</b>, log it out, and change your password.</div>`,
             SECURITY_FOOTER,
             `New sign-in: ${device}`,
+          ),
+        };
+      }
+      case 'security_alert': {
+        // A settings-change receipt: two-step toggled, devices signed out, a
+        // recovery email added or removed, account recovery used. Title and
+        // body come from the RPC that recorded the change, so the mail says
+        // exactly what the durable record says.
+        const title = escapeHtml(String(vars.title ?? 'Security alert'));
+        const body = escapeHtml(String(vars.body ?? 'A security setting on your account was changed.'));
+        return {
+          subject: `Esporta security alert: ${String(vars.title ?? 'security setting changed')}`,
+          text: `${vars.title ?? 'Security alert'} — ${vars.body ?? 'A security setting on your account was changed.'} If this was not you, sign in and review your security settings right away.`,
+          html: shell(
+            heading(escapeHtml(String(vars.title ?? 'Security alert'))) +
+              paragraph(escapeHtml(String(vars.body ?? 'A security setting on your account was changed.'))) +
+              `<div style="color:${MUTED};font-size:14px;line-height:1.65;margin-top:18px;">If this was you, no action is needed. If not, open <b style="color:${TEXT};">Security</b> in the app, change your password, and review your logged-in devices.</div>`,
+            SECURITY_FOOTER,
+            escapeHtml(String(vars.title ?? 'Security alert')),
           ),
         };
       }

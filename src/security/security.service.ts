@@ -98,22 +98,30 @@ export class SecurityService {
       failureMessage: 'We could not resend the code. Please try again in a moment.',
     });
   }
-  removeRecoveryEmail(token: string) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_remove_recovery_email');
+  async removeRecoveryEmail(token: string, userId: string) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_remove_recovery_email');
+    // The RPC queued a security_alert mail; drain it in the same request.
+    return this.withDelivery(userId, res, { required: false });
   }
 
   // ---- two-step / alerts ----
-  setTwoStepMaster(token: string, enabled: boolean) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_set_two_step_master', { p_enabled: enabled });
+  // Every one of these writes a security_alert notification, whose email copy
+  // rides the outbox (see security_notify). Draining here delivers it in the
+  // same request, reported in `delivery`, never fatal.
+  async setTwoStepMaster(token: string, userId: string, enabled: boolean) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_set_two_step_master', { p_enabled: enabled });
+    return this.withDelivery(userId, res, { required: false });
   }
-  setTwoStep(token: string, method: string, enabled: boolean) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_set_two_step', { p_method: method, p_enabled: enabled });
+  async setTwoStep(token: string, userId: string, method: string, enabled: boolean) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_set_two_step', { p_method: method, p_enabled: enabled });
+    return this.withDelivery(userId, res, { required: false });
   }
   setNewLoginAlerts(token: string, enabled: boolean) {
     return this.supabase.rpcAsCaller<Json>(token, 'security_set_new_login_alerts', { p_enabled: enabled });
   }
-  logMfa(token: string, enabled: boolean) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_log_mfa', { p_enabled: enabled });
+  async logMfa(token: string, userId: string, enabled: boolean) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_log_mfa', { p_enabled: enabled });
+    return this.withDelivery(userId, res, { required: false });
   }
 
   // ---- reauth ----
@@ -125,11 +133,15 @@ export class SecurityService {
   }
 
   // ---- sessions ----
-  revokeSession(token: string, sessionId: string) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_revoke_session', { p_session_id: sessionId });
+  async revokeSession(token: string, userId: string, sessionId: string) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_revoke_session', { p_session_id: sessionId });
+    // Revoking a single device writes a security alert when the RPC considers
+    // it notable; drain whatever landed.
+    return this.withDelivery(userId, res, { required: false });
   }
-  revokeOthers(token: string) {
-    return this.supabase.rpcAsCaller<Json>(token, 'security_revoke_others');
+  async revokeOthers(token: string, userId: string) {
+    const res = await this.supabase.rpcAsCaller<Json>(token, 'security_revoke_others');
+    return this.withDelivery(userId, res, { required: false });
   }
 
   // ---- new-device login approval ----

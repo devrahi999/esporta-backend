@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { EmailService } from '../email/email.service';
+import { EmailOutboxService } from '../email/email-outbox.service';
 
 /**
  * Signed-out account recovery via a VERIFIED recovery email. `start` mints a
@@ -21,6 +22,7 @@ export class AccountRecoveryService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly email: EmailService,
+    private readonly outbox: EmailOutboxService,
   ) {}
 
   async start(email: string): Promise<{ ok: true }> {
@@ -55,10 +57,11 @@ export class AccountRecoveryService {
 
   async verify(email: string, code: string): Promise<{ ok: boolean; token_hash?: string }> {
     try {
-      const data = await this.supabase.rpcAsService<{ ok?: boolean; primary_email?: string }>(
-        'account_recovery_verify',
-        { p_email: email, p_code: code },
-      );
+      const data = await this.supabase.rpcAsService<{
+        ok?: boolean;
+        primary_email?: string;
+        user_id?: string;
+      }>('account_recovery_verify', { p_email: email, p_code: code });
       if (!data || data.ok !== true || !data.primary_email) return { ok: false };
 
       const { data: link, error } = await this.supabase.service().auth.admin.generateLink({
@@ -67,6 +70,27 @@ export class AccountRecoveryService {
       });
       const tokenHash = link?.properties?.hashed_token;
       if (error || !tokenHash) return { ok: false };
+
+      // The RPC recorded an "account recovery used" security alert whose email
+      // copy is queued in the outbox (security_notify). There is no caller
+      // session here — drain it now, scoped to the recovered account, so the
+      // mail leaves with this request. A failure is logged, never surfaced
+      // (this endpoint must not leak account state).
+      if (data.user_id) {
+        try {
+          const flush = await this.outbox.flushForUser(String(data.user_id));
+          if (flush.attempted > 0) {
+            this.log.log(
+              `recovery alert mail attempted=${flush.attempted} sent=${flush.sent} failed=${flush.failed}`,
+            );
+          }
+        } catch (e) {
+          this.log.warn(
+            `recovery alert outbox drain failed: ${e instanceof Error ? e.message : 'unknown error'}`,
+          );
+        }
+      }
+
       return { ok: true, token_hash: tokenHash };
     } catch {
       return { ok: false };

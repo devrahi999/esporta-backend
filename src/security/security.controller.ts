@@ -87,19 +87,19 @@ export class SecurityController {
   }
 
   @Delete('recovery-email')
-  removeRecoveryEmail(@AccessToken() token: string) {
-    return this.security.removeRecoveryEmail(token);
+  removeRecoveryEmail(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.security.removeRecoveryEmail(token, user.id);
   }
 
   // ---- two-step / alerts ----
   @Put('two-step/master')
-  setTwoStepMaster(@AccessToken() token: string, @Body() dto: EnabledDto) {
-    return this.security.setTwoStepMaster(token, dto.enabled);
+  setTwoStepMaster(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser, @Body() dto: EnabledDto) {
+    return this.security.setTwoStepMaster(token, user.id, dto.enabled);
   }
 
   @Put('two-step')
-  setTwoStep(@AccessToken() token: string, @Body() dto: SetTwoStepDto) {
-    return this.security.setTwoStep(token, dto.method, dto.enabled);
+  setTwoStep(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser, @Body() dto: SetTwoStepDto) {
+    return this.security.setTwoStep(token, user.id, dto.method, dto.enabled);
   }
 
   @Put('new-login-alerts')
@@ -108,8 +108,8 @@ export class SecurityController {
   }
 
   @Post('mfa-log')
-  logMfa(@AccessToken() token: string, @Body() dto: EnabledDto) {
-    return this.security.logMfa(token, dto.enabled);
+  logMfa(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser, @Body() dto: EnabledDto) {
+    return this.security.logMfa(token, user.id, dto.enabled);
   }
 
   // ---- reauth ----
@@ -125,14 +125,18 @@ export class SecurityController {
 
   // ---- sessions ----
   @Post('sessions/revoke-others')
-  revokeOthers(@AccessToken() token: string) {
-    return this.security.revokeOthers(token);
+  revokeOthers(@AccessToken() token: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.security.revokeOthers(token, user.id);
   }
 
   @Post('sessions/:id/revoke')
-  revokeSession(@AccessToken() token: string, @Param('id') id: string) {
+  revokeSession(
+    @AccessToken() token: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
     if (!isUuid(id)) throw AppException.validation('Invalid session id.');
-    return this.security.revokeSession(token, id);
+    return this.security.revokeSession(token, user.id, id);
   }
 
   // ---- new-device login approval ----
