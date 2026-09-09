@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { MediaService } from '../media/media.service';
 import type {
   AdminApplicationsQuery,
   AdminAuditQuery,
@@ -26,6 +27,7 @@ import type {
   UpsertAdminDto,
   UpsertFaqDto,
   UpsertReferenceDto,
+  VerificationControlDto,
 } from './dto/admin.dto';
 
 type Json = unknown;
@@ -38,7 +40,10 @@ type Json = unknown;
  */
 @Injectable()
 export class AdminService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly media: MediaService,
+  ) {}
 
   private rpc<T = Json>(token: string, fn: string, params: Record<string, unknown> = {}) {
     return this.supabase.rpcAsCaller<T>(token, fn, params);
@@ -106,6 +111,87 @@ export class AdminService {
       p_note: dto.note ?? null,
       p_cooldown_days: dto.cooldown_days ?? null,
     });
+  }
+  verificationControlGet(token: string) {
+    return this.rpc(token, 'admin_verification_control_get');
+  }
+  verificationControlSet(token: string, dto: VerificationControlDto) {
+    return this.rpc(token, 'admin_verification_control_set', {
+      p_mode: dto.mode,
+      p_followers_required: dto.followers_required,
+      p_views_required: dto.views_required,
+    });
+  }
+
+  // ---- permanent deletion (P6/P7) ----
+  //
+  // Two-stage, because the provider objects are NOT in Postgres: prepare
+  // returns the plan (identities/posts + the R2 keys and Stream uids), the
+  // backend purges the objects through the existing R2/Stream providers, then
+  // execute removes the DB rows. A failed object purge is collected and
+  // reported, never allowed to block the rest — the audit 'after' state shows
+  // it, so an operator can chase the stragglers.
+
+  async permanentDeleteUsers(
+    token: string,
+    ids: string[],
+  ): Promise<{
+    deleted: number;
+    purged_media: number;
+    failed_media: { id: string; reason: string }[];
+  }> {
+    const plan = await this.rpc<{
+      media: Array<{ id: string; provider: string; storage_path: string | null; provider_uid: string | null }>;
+    }>(token, 'admin_permanent_delete_prepare', { p_ids: ids });
+
+    const { purged, failed } = await this.media.purgeProviderMedia(plan.media ?? []);
+
+    const result = await this.rpc<{
+      deleted: number;
+      purged_media: number;
+      failed_media: number;
+    }>(token, 'admin_permanent_delete_execute', {
+      p_ids: ids,
+      p_purged: purged,
+      p_failed: failed.map((f) => f.id),
+    });
+
+    return {
+      deleted: result.deleted,
+      purged_media: result.purged_media,
+      failed_media: failed,
+    };
+  }
+
+  async permanentDeleteContent(
+    token: string,
+    ids: string[],
+  ): Promise<{
+    deleted: number;
+    purged_media: number;
+    failed_media: { id: string; reason: string }[];
+  }> {
+    const plan = await this.rpc<{
+      media: Array<{ id: string; provider: string; storage_path: string | null; provider_uid: string | null }>;
+    }>(token, 'admin_permanent_content_delete_prepare', { p_post_ids: ids });
+
+    const { purged, failed } = await this.media.purgeProviderMedia(plan.media ?? []);
+
+    const result = await this.rpc<{
+      deleted: number;
+      purged_media: number;
+      failed_media: number;
+    }>(token, 'admin_permanent_content_delete_execute', {
+      p_post_ids: ids,
+      p_purged: purged,
+      p_failed: failed.map((f) => f.id),
+    });
+
+    return {
+      deleted: result.deleted,
+      purged_media: result.purged_media,
+      failed_media: failed,
+    };
   }
 
   // ---- content ----

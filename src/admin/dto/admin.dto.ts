@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsIn,
@@ -177,6 +178,16 @@ export class DecideVerificationDto {
   /** Overrides the default cooldown for a rejection. Omitted uses the default. */
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(365) cooldown_days?: number;
 }
+export class VerificationControlDto {
+  /** `followers` | `views` | `both` — which metric(s) gate eligibility. */
+  @IsIn(['followers', 'views', 'both']) mode!: 'followers' | 'views' | 'both';
+  @Type(() => Number) @IsInt() @Min(0) followers_required!: number;
+  @Type(() => Number) @IsInt() @Min(0) views_required!: number;
+}
+export class PermanentDeleteDto {
+  @IsArray() @ArrayNotEmpty() @IsUUID('4', { each: true }) ids!: string[];
+}
+
 export class ReplyTicketDto {
   @IsString() @MaxLength(4000) body!: string;
 }

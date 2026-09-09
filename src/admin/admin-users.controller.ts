@@ -11,12 +11,14 @@ import {
   DecideVerificationDto,
   DisableAdminDto,
   NoteDto,
+  PermanentDeleteDto,
   RestrictDto,
   SetIdentityStatusDto,
   SetPremiumDto,
   SetRoleCapabilityDto,
   SetVerifiedDto,
   UpsertAdminDto,
+  VerificationControlDto,
 } from './dto/admin.dto';
 
 function uuid(id: string, label = 'id'): void {
@@ -70,8 +72,26 @@ export class AdminUsersController {
     return this.admin.restrict(t, id, dto.days, dto.reason);
   }
 
+  /**
+   * Permanently delete deactivated profiles (P6). The backend purges every R2
+   * object and Stream asset the identities own, then the RPC removes the DB
+   * rows and audits. Irreversible — the capability gate is `users.permanent_delete`.
+   */
+  @Post('users/permanent-delete') permanentDeleteUsers(
+    @AccessToken() t: string,
+    @Body() dto: PermanentDeleteDto,
+  ) {
+    return this.admin.permanentDeleteUsers(t, dto.ids);
+  }
+
   // verification
   @Get('verification') queue(@AccessToken() t: string, @Query() q: AdminVerificationQuery) { return this.admin.verificationQueue(t, q); }
+  @Get('verification/control') controlGet(@AccessToken() t: string) {
+    return this.admin.verificationControlGet(t);
+  }
+  @Post('verification/control') controlSet(@AccessToken() t: string, @Body() dto: VerificationControlDto) {
+    return this.admin.verificationControlSet(t, dto);
+  }
   @Get('verification/:id') vDetail(@AccessToken() t: string, @Param('id') id: string) {
     uuid(id, 'request id');
     return this.admin.verificationDetail(t, id);

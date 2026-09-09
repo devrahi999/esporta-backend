@@ -9,22 +9,24 @@ import {
   AnalyticsTopIdentitiesQueryDto,
 } from './dto/analytics-query.dto';
 import { AdminGuard } from '../admin/guards/admin.guard';
+import { Capability, CapabilityGuard } from '../admin/guards/capability.guard';
 
 /**
  * `/api/v1/admin/analytics/*` — platform-wide analytics reads for the
- * analytics-admin console. AdminGuard rejects non-admins early; the numbers come
- * from the same daily rollups and the same read service the identity dashboards
- * use, so the admin surface adds scope, never a second calculation path.
+ * analytics-admin console. AdminGuard rejects non-admins early; CapabilityGuard
+ * narrows an admin to `analytics.view` (P12 admin panel access) — the read
+ * functions themselves are SECURITY DEFINER without an `admin_require` line, so
+ * this HTTP layer is where the capability is real. The numbers come from the
+ * same daily rollups and the same read service the identity dashboards use, so
+ * the admin surface adds scope, never a second calculation path.
  *
  * Every route is a finished answer: ranking, filtering, pagination, averages and
  * ratios are all resolved here, because the console must never compute a metric
  * from two others in the browser.
- *
- * A future `analytics.view` capability can gate these more finely without
- * changing any contract — the payload shapes are what the console depends on.
  */
 @Controller('admin/analytics')
-@UseGuards(AdminGuard)
+@UseGuards(AdminGuard, CapabilityGuard)
+@Capability('analytics.view')
 export class AdminAnalyticsController {
   constructor(private readonly reads: AnalyticsReadService) {}
 

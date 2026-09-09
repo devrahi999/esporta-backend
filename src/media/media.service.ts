@@ -267,6 +267,45 @@ export class MediaService {
     return { deleted: true };
   }
 
+  /**
+   * Purges provider objects only — used by the admin permanent-delete flow,
+   * where the DB rows are removed by the RPC, not here.
+   *
+   * A missing object is success: R2's delete is idempotent and Stream's 404
+   * means the asset is already gone. Each item is attempted independently so
+   * one failure cannot block the rest; failures are collected and returned.
+   */
+  async purgeProviderMedia(
+    items: Array<{
+      id: string;
+      provider: string;
+      storage_path: string | null;
+      provider_uid: string | null;
+    }>,
+  ): Promise<{ purged: string[]; failed: { id: string; reason: string }[] }> {
+    const purged: string[] = [];
+    const failed: { id: string; reason: string }[] = [];
+
+    for (const item of items) {
+      try {
+        if (item.provider === 'r2' && item.storage_path) {
+          await this.r2.delete(this.keyFromPath(item.storage_path));
+        } else if (item.provider === 'stream' && item.provider_uid) {
+          await this.stream.deleteVideo(item.provider_uid);
+        }
+        // No provider_uid / storage_path: nothing to delete — already gone.
+        purged.push(item.id);
+      } catch (error) {
+        failed.push({
+          id: item.id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return { purged, failed };
+  }
+
   async replaceSession(token: string, identityId: string, mediaId: string, dto: ReplaceImageSessionDto) {
     const existing = await this.loadOwnR2Media(token, mediaId);
     const key = imageObjectKey(

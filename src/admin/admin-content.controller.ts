@@ -12,6 +12,7 @@ import {
   AdminReportsQuery,
   AdminTryoutsQuery,
   ModerateDto,
+  PermanentDeleteDto,
   ResolveReportDto,
 } from './dto/admin.dto';
 
@@ -36,6 +37,20 @@ export class AdminContentController {
   @Post('posts/:id/moderate') moderatePost(@AccessToken() t: string, @Param('id') id: string, @Body() dto: ModerateDto) {
     uuid(id, 'post id');
     return this.admin.moderatePost(t, id, dto.action, dto.reason);
+  }
+
+  /**
+   * Permanently delete removed content (P7). The backend purges the R2 objects
+   * and Stream assets behind the posts, then the RPC removes the DB rows
+   * (cascading comments/reactions/saves/reco refs) and audits. Only content in
+   * the removed state is accepted — the two-stage lifecycle keeps the recovery
+   * window until an admin closes it.
+   */
+  @Post('content/permanent-delete') permanentDeleteContent(
+    @AccessToken() t: string,
+    @Body() dto: PermanentDeleteDto,
+  ) {
+    return this.admin.permanentDeleteContent(t, dto.ids);
   }
 
   @Get('comments') comments(@AccessToken() t: string, @Query() q: AdminCommentsQuery) { return this.admin.comments(t, q); }

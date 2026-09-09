@@ -23,8 +23,8 @@ interface Delivery {
    * Null for anything Esporta itself sent — admin broadcasts store
    * `actor_id = NULL` — and also null for a support reply, which does carry an
    * actor but is Esporta speaking, so the claim function suppresses it rather
-   * than putting a staff member's face in a user's tray. Null leaves the tray
-   * showing the app's own launcher icon, which is the Esporta mark.
+   * than putting a staff member's face in a user's tray. Null falls back to
+   * [BRAND_IMAGE_URL], the Esporta mark, in the notification's large-icon slot.
    */
   actor_avatar_url: string | null;
   /** `personal` or `team` — which kind of profile acted. */
@@ -45,6 +45,18 @@ export interface DispatchSummary {
 }
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
+
+/**
+ * The Esporta mark, shown as the notification's right-side (large) icon for
+ * every message Esporta itself sends — the same slot an actor's avatar takes
+ * for social notifications. Without it, stock Android renders no large icon at
+ * all for actor-less pushes, so system notifications carried no branding while
+ * social ones did. FCM's `notification.image` is the only right-side mechanism
+ * in the v1 API; a square 512px mark keeps it at normal icon size.
+ */
+const BRAND_IMAGE_URL =
+  process.env.NOTIFICATION_BRAND_IMAGE_URL ??
+  'https://app.esporta.site/esporta-mark.jpg';
 
 /**
  * Drains the `notification_deliveries` queue and sends via FCM.
@@ -101,7 +113,10 @@ export class PushDispatchService {
           actor_type: str(d.actor_kind),
         };
 
-        const imageUrl = d.actor_avatar_url ?? null;
+        // Actor-less (Esporta speaking) gets the brand mark in the large-icon
+        // slot; an actor's avatar when there is one. Either way the tray shows
+        // an identity on the right side.
+        const imageUrl = d.actor_avatar_url ?? BRAND_IMAGE_URL;
 
         let sent = 0;
         let failed = 0;
