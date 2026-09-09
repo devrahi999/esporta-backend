@@ -241,9 +241,16 @@ export class PostsService {
     return this.byId(token, viewerId, postId);
   }
 
-  /** Deletes a post; `purge_post` authorises, deletes and queues media cleanup. */
+  /**
+   * Deletes a post. `delete_post` authorises exactly like the old purge path
+   * (`can_act_as` on the author) but SOFT-deletes: the row and every media
+   * link survive under `deleted_at`, which is what puts user-deleted content
+   * on Core Admin's Removed Content page for review and the eventual
+   * permanent purge (rows + R2 + Stream). The hard delete and its media
+   * cleanup belong to the admin flow, not to a user's tap.
+   */
   async delete(token: string, postId: string): Promise<{ deleted: true }> {
-    await this.supabase.rpcAsCaller(token, 'purge_post', { p_post_id: postId });
+    await this.supabase.rpcAsCaller(token, 'delete_post', { p_post_id: postId });
     return { deleted: true };
   }
 
