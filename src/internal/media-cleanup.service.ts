@@ -218,7 +218,7 @@ export class MediaCleanupService {
       }
     }
 
-    await this.media.purgeProviderMedia([
+    const result = await this.media.purgeProviderMedia([
       {
         id: task.id,
         provider: task.provider,
@@ -226,6 +226,16 @@ export class MediaCleanupService {
         provider_uid: providerUid,
       },
     ]);
+    // purgeProviderMedia collects failures instead of throwing (its admin
+    // callers destructure `failed`), so a provider-level delete failure would
+    // otherwise look like success here and the row would be marked resolved —
+    // an object left alive, silently, with finalization free to proceed. A
+    // failure is a transient, retryable condition: throw so the row stays
+    // open, records last_error, and the claim function's backoff re-offers it.
+    const itemFailure = result.failed.find((f) => f.id === task.id);
+    if (itemFailure) {
+      throw new Error(`provider purge failed: ${itemFailure.reason.slice(0, 300)}`);
+    }
   }
 
   /** Done: the object is gone (confirmed by the provider or verified absent). */
