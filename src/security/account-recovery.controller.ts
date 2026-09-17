@@ -1,12 +1,12 @@
 import { Body, Controller, Post } from '@nestjs/common';
-import { IsEmail, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { AccountRecoveryService } from './account-recovery.service';
 import { Public } from '../common/decorators/public.decorator';
 
 class AccountRecoveryDto {
   @IsIn(['start', 'verify']) action!: string;
   @IsEmail() @MaxLength(254) email!: string;
-  @IsOptional() @IsString() @MaxLength(12) code?: string;
+  @IsOptional() @IsString() @MinLength(4) @MaxLength(12) code?: string;
 }
 
 /**

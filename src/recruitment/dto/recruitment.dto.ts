@@ -6,26 +6,28 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 export const RECRUITMENT_SETTABLE_STATUS = ['open', 'closed'] as const;
 
 export class CreateRecruitmentDto {
   @IsUUID('4') post_id!: string;
-  @IsOptional() @IsString() game_id?: string;
-  @IsOptional() @IsString() role_id?: string;
-  @IsOptional() @IsString() game_role_slug?: string;
-  @IsOptional() @IsString() region?: string;
-  @IsOptional() @IsString() country?: string;
-  @IsOptional() @IsString() city?: string;
+  @IsOptional() @IsString() @MaxLength(64) game_id?: string;
+  @IsOptional() @IsString() @MaxLength(64) role_id?: string;
+  @IsOptional() @IsString() @MaxLength(64) game_role_slug?: string;
+  @IsOptional() @IsString() @MaxLength(8) region?: string;
+  @IsOptional() @IsString() @MaxLength(56) country?: string;
+  @IsOptional() @IsString() @MaxLength(120) city?: string;
   @IsOptional() @Type(() => Number) @IsInt() min_rank_tier?: number;
   @IsOptional() @Type(() => Number) @IsInt() max_rank_tier?: number;
-  @IsOptional() @Type(() => Number) @IsInt() min_age?: number;
-  @IsOptional() @Type(() => Number) @IsInt() max_age?: number;
-  @IsOptional() @IsString() availability?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(120) min_age?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(120) max_age?: number;
+  @IsOptional() @IsString() @MaxLength(200) availability?: string;
   @IsOptional() @IsString() @MaxLength(2000) requirements?: string;
-  @IsOptional() @Type(() => Number) @IsInt() slots?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) slots?: number;
   @IsOptional() @IsISO8601() deadline?: string;
 }
 

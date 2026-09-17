@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { Request } from 'express';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AppException } from '../common/errors/app-exception';
@@ -8,8 +8,13 @@ import {
   type AuthenticatedUser,
 } from '../common/http/request-context';
 import { isUuid } from '../common/utils/uuid';
+import { LoginThrottleService } from './login-throttle.service';
+import { createHash } from 'node:crypto';
 
 const ACTIVE_PROFILE_HEADER = 'x-active-profile-id';
+
+/** Account-level backoff message; paired with a `Retry-After` hint in details. */
+const LOGIN_DELAYED_MESSAGE = 'Too many sign-in attempts. Please wait before trying again.';
 
 /**
  * Turns the request's `Authorization: Bearer <jwt>` into a verified user and
@@ -22,16 +27,56 @@ const ACTIVE_PROFILE_HEADER = 'x-active-profile-id';
  */
 @Injectable()
 export class AuthService {
-  constructor(private readonly supabase: SupabaseService) {}
+  private readonly log = new Logger(AuthService.name);
 
-  async login(dto: { email: string; password: string }) {
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly loginThrottle: LoginThrottleService,
+  ) {}
+
+  /**
+   * The single authentication boundary (admin consoles + Flutter sign-in).
+   *
+   * Two protections layer here:
+   * - account-level progressive backoff BEFORE the credential check (PHASE 3):
+   *   enforced for every sign-in against an account in its delay window,
+   *   regardless of which IP asks — closing the STEP 1 gap where rotating IPs
+   *   defeated per-IP throttling for a targeted account;
+   * - a failure message that NEVER repeats GoTrue's wording (PHASE 12): the
+   *   upstream text varies ("Email not confirmed", "Invalid login credentials")
+   *   and would let a caller probe account/verification state, so the client
+   *   always gets one generic line while the specific reason is server-logged
+   *   with a keyed correlation hash (never the email itself, never the password).
+   */
+  async login(dto: { email: string; password: string }, clientIp?: string) {
+    const delay = this.loginThrottle.delayFor(dto.email);
+    if (delay > 0) {
+      throw AppException.rateLimited(LOGIN_DELAYED_MESSAGE, {
+        retryAfterMs: delay,
+      });
+    }
+
     const { data, error } = await this.supabase.anon().auth.signInWithPassword({
       email: dto.email,
       password: dto.password,
     });
-    if (error) {
-      throw AppException.unauthenticated(error.message);
+
+    if (error || !data.session) {
+      this.loginThrottle.recordFailure(dto.email);
+      // Correlation key lets operators join server logs without the raw email
+      // (privacy) — and no password material ever reaches this line.
+      const correlation = createHash('sha256')
+        .update(dto.email.trim().toLowerCase())
+        .digest('hex')
+        .slice(0, 12);
+      this.log.warn(
+        `login failed reason="${error?.message ?? 'no session returned'}" ` +
+          `account=${correlation} ip=${clientIp ?? 'unknown'}`,
+      );
+      throw AppException.unauthenticated('Invalid email or password.');
     }
+
+    this.loginThrottle.recordSuccess(dto.email);
     return data.session;
   }
 

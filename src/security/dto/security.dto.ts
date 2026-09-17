@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class SetRecoveryEmailDto {
   @IsEmail() @MaxLength(254) email!: string;
@@ -13,7 +13,9 @@ export class EnabledDto {
 }
 
 export class SetTwoStepDto {
-  @IsString() method!: string;
+  // Tightly enumerated: the value flows into a security RPC, and a whitelist
+  // here means an arbitrary string can never reach the DB layer.
+  @IsIn(['email', 'totp']) method!: string;
   @IsBoolean() enabled!: boolean;
 }
 

@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { ActiveProfileGuard } from './guards/active-profile.guard';
 import { OptionalAuthGuard } from './guards/optional-auth.guard';
+import { LoginThrottleService } from './login-throttle.service';
 
 /**
  * Wires JWT verification (plan §6). {@link JwtAuthGuard} is registered globally,
@@ -17,10 +18,13 @@ import { OptionalAuthGuard } from './guards/optional-auth.guard';
   controllers: [AuthController],
   providers: [
     AuthService,
+    // Account-level sign-in backoff (STEP 2 PHASE 3): keyed by target account,
+    // independent of the caller's IP.
+    LoginThrottleService,
     ActiveProfileGuard,
     OptionalAuthGuard,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
-  exports: [AuthService, ActiveProfileGuard, OptionalAuthGuard],
+  exports: [AuthService, LoginThrottleService, ActiveProfileGuard, OptionalAuthGuard],
 })
 export class AuthModule {}

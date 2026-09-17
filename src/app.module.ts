@@ -1,6 +1,9 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { AppConfigModule } from './config/config.module';
+import { EsportaThrottlerGuard } from './common/guards/esporta-throttler.guard';
+import { SecurityHeadersMiddleware } from './common/middleware/security-headers.middleware';
 import { LoggerModule } from './common/logger/logger.module';
 import { SupabaseModule } from './supabase/supabase.module';
 import { AuthModule } from './auth/auth.module';
@@ -47,6 +50,17 @@ import { ReportsModule } from './reports/reports.module';
     AppConfigModule,
     LoggerModule,
     SupabaseModule,
+    // Rate limiter plumbing (STEP 1 security baseline): one named throttler
+    // whose storage/options the {@link EsportaThrottlerGuard} override needs.
+    // The guard resolves the real per-tier limit from validated env config at
+    // request time, so this nominal entry only seeds the storage contract and
+    // never throttles by itself.
+    ThrottlerModule.forRootAsync({
+      imports: [],
+      useFactory: () => ({
+        throttlers: [{ name: 'esporta', ttl: 60_000, limit: 1 }],
+      }),
+    }),
     AuthModule,
     HealthModule,
     ProfilesModule,
@@ -77,6 +91,9 @@ import { ReportsModule } from './reports/reports.module';
     ReportsModule,
   ],
   providers: [
+    // Rate limiting (STEP 1 security baseline) is a global guard so it runs
+    // before every controller, alongside the global JWT guard from AuthModule.
+    { provide: APP_GUARD, useClass: EsportaThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -85,5 +102,8 @@ import { ReportsModule } from './reports/reports.module';
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer.apply(RequestIdMiddleware).forRoutes('*');
+    // Baseline security headers on every response (complements helmet's
+    // express-level defaults applied in bootstrap.ts).
+    consumer.apply(SecurityHeadersMiddleware).forRoutes('*');
   }
 }

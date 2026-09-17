@@ -4,6 +4,7 @@ import type {
   AppConfig,
   FirebaseConfig,
   R2Config,
+  RateLimitConfig,
   SecurityConfig,
   SmtpConfig,
   StreamConfig,
@@ -61,5 +62,9 @@ export class AppConfigService {
 
   get security(): SecurityConfig {
     return this.config.get('security', { infer: true });
+  }
+
+  get rateLimit(): RateLimitConfig {
+    return this.config.get('rateLimit', { infer: true });
   }
 }

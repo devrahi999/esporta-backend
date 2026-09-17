@@ -66,6 +66,26 @@ const RawSchema = z
     // Security / internal
     INTERNAL_WEBHOOK_SECRET: z.string().optional(),
     ENCRYPTION_KEY: z.string().optional(),
+
+    // Rate limiting (requests per minute per tier). All optional with sane
+    // defaults; values are clamped in validateEnv so a bad value can neither
+    // disable throttling nor brick the API.
+    AUTH_LOGIN_RATE_LIMIT: z.coerce.number().int().optional(),
+    RECOVERY_RATE_LIMIT: z.coerce.number().int().optional(),
+    WEBHOOK_RATE_LIMIT: z.coerce.number().int().optional(),
+    ANALYTICS_RATE_LIMIT: z.coerce.number().int().optional(),
+    MEDIA_RATE_LIMIT: z.coerce.number().int().optional(),
+    PUBLIC_RATE_LIMIT: z.coerce.number().int().optional(),
+    DEFAULT_RATE_LIMIT: z.coerce.number().int().optional(),
+
+    // Account-level login backoff (STEP 2): progressive delays keyed by the
+    // target account after repeated FAILED sign-ins. Configurable per the
+    // existing env-config pattern; all optional with safe defaults.
+    LOGIN_BACKOFF_INITIAL_MS: z.coerce.number().optional(),
+    LOGIN_BACKOFF_MAX_MS: z.coerce.number().optional(),
+    LOGIN_BACKOFF_MULTIPLIER: z.coerce.number().optional(),
+    LOGIN_BACKOFF_WINDOW_MS: z.coerce.number().optional(),
+    LOGIN_BACKOFF_THRESHOLD: z.coerce.number().int().optional(),
   })
   .passthrough();
 
@@ -115,6 +135,27 @@ export interface SecurityConfig {
   encryptionKey?: string;
 }
 
+/** Env-tuned per-tier limits, already clamped (see validateEnv). */
+export interface RateLimitConfig {
+  defaultPerMinute: number;
+  tiers: Record<string, number>;
+  /**
+   * Account-level progressive backoff for failed sign-ins (STEP 2). Delays
+   * grow exponentially from `initialDelayMs` by `multiplier` per failure once
+   * `accountThreshold` failures accrue inside `failureWindowMs`, capped at
+   * `maxDelayMs`. No permanent lockout: state expires with the window.
+   */
+  loginBackoff: LoginBackoffConfig;
+}
+
+export interface LoginBackoffConfig {
+  initialDelayMs: number;
+  maxDelayMs: number;
+  multiplier: number;
+  failureWindowMs: number;
+  accountThreshold: number;
+}
+
 export interface AppConfig {
   nodeEnv: 'development' | 'preview' | 'production' | 'test';
   isProduction: boolean;
@@ -127,9 +168,28 @@ export interface AppConfig {
   firebase: FirebaseConfig;
   smtp: SmtpConfig;
   security: SecurityConfig;
+  rateLimit: RateLimitConfig;
 }
 
 const DEV_ORIGINS = ['http://localhost:3000', 'http://localhost:8080'];
+
+/** Requests-per-minute clamp: >= 1, <= max, non-integer/absent → fallback. */
+function perMinute(raw: number | undefined, fallback: number): number {
+  if (raw === undefined || !Number.isFinite(raw)) return fallback;
+  return Math.min(Math.max(1, Math.trunc(raw)), 1000);
+}
+
+/** Milliseconds clamp: >= 0, <= 1h, absent/non-finite → fallback. */
+function durationMs(raw: number | undefined, fallback: number): number {
+  if (raw === undefined || !Number.isFinite(raw)) return fallback;
+  return Math.min(Math.max(0, Math.trunc(raw)), 3_600_000);
+}
+
+/** Multiplier clamp: >= 1 (never shrinking delays), <= 10, absent → fallback. */
+function growthFactor(raw: number | undefined, fallback: number): number {
+  if (raw === undefined || !Number.isFinite(raw)) return fallback;
+  return Math.min(Math.max(1, raw), 10);
+}
 
 function parseOrigins(raw: string | undefined, isProd: boolean): string[] {
   const list = (raw ?? '')
@@ -175,6 +235,28 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
     ? e.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
     : undefined;
 
+  // Per-tier rate limits: env-tuned, clamped via perMinute (>=1, <=1000,
+  // fallbacks 10 for sensitive tiers up to 120 for high-churn public reads).
+  // perMinute(undefined) → fallback, so leaving a var unset uses the default.
+  const rateLimit = {
+    defaultPerMinute: perMinute(e.DEFAULT_RATE_LIMIT, 60),
+    tiers: {
+      login: perMinute(e.AUTH_LOGIN_RATE_LIMIT, 10),
+      'account-recovery': perMinute(e.RECOVERY_RATE_LIMIT, 10),
+      webhook: perMinute(e.WEBHOOK_RATE_LIMIT, 120),
+      'analytics-ingest': perMinute(e.ANALYTICS_RATE_LIMIT, 60),
+      media: perMinute(e.MEDIA_RATE_LIMIT, 30),
+      public: perMinute(e.PUBLIC_RATE_LIMIT, 120),
+    } as Record<string, number>,
+    loginBackoff: {
+      initialDelayMs: durationMs(e.LOGIN_BACKOFF_INITIAL_MS, 2_000),
+      maxDelayMs: durationMs(e.LOGIN_BACKOFF_MAX_MS, 60_000),
+      multiplier: growthFactor(e.LOGIN_BACKOFF_MULTIPLIER, 2),
+      failureWindowMs: durationMs(e.LOGIN_BACKOFF_WINDOW_MS, 900_000),
+      accountThreshold: perMinute(e.LOGIN_BACKOFF_THRESHOLD, 5),
+    },
+  };
+
   return {
     nodeEnv: e.NODE_ENV,
     isProduction,
@@ -219,5 +301,6 @@ export function validateEnv(raw: Record<string, unknown>): AppConfig {
       internalWebhookSecret: e.INTERNAL_WEBHOOK_SECRET,
       encryptionKey: e.ENCRYPTION_KEY,
     },
+    rateLimit,
   };
 }

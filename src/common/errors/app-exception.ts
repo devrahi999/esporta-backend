@@ -69,6 +69,11 @@ export class AppException extends HttpException {
     return new AppException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SERVICE_UNAVAILABLE, message, details);
   }
 
+  /** Emitted by the global rate limiter; clients should honour `Retry-After`. */
+  static rateLimited(message = 'Too many requests. Please slow down.', details?: unknown) {
+    return new AppException(HttpStatus.TOO_MANY_REQUESTS, ErrorCode.RATE_LIMITED, message, details);
+  }
+
   /**
    * Maintenance mode (plan Part 3): normal app operations are paused. The
    * message/eta are the operator's own words from platform_settings, already

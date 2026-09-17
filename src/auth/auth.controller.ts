@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
+import { clientIpOf } from '../common/http/client-ip';
 import {
   ActiveProfileId,
   CurrentUser,
@@ -23,8 +25,8 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  login(@Body() dto: AuthLoginDto) {
-    return this.auth.login(dto);
+  login(@Body() dto: AuthLoginDto, @Req() req: Request) {
+    return this.auth.login(dto, clientIpOf(req));
   }
 
   @Get('me')

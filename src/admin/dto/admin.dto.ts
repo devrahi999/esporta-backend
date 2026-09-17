@@ -13,6 +13,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 /**
@@ -29,9 +30,12 @@ const ToBool = () =>
 
 // ---- shared query base ----
 class PageQuery {
-  @IsOptional() @Type(() => Number) @IsInt() limit?: number;
-  @IsOptional() @Type(() => Number) @IsInt() offset?: number;
-  @IsOptional() @IsString() search?: string;
+  // Bounded pagination: `limit` is capped so no caller can ask an admin RPC
+  // for the whole table; `search` is length-capped so a list request cannot
+  // smuggle an unbounded string into a `p_search` ILIKE.
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(10_000) offset?: number;
+  @IsOptional() @IsString() @MaxLength(120) search?: string;
 }
 
 // ---- lists ----
@@ -95,9 +99,9 @@ export class AdminAuditQuery extends PageQuery {
   @IsOptional() @IsISO8601() since?: string;
 }
 export class AdminSearchQuery {
-  @IsString() q!: string;
+  @IsString() @MinLength(1) @MaxLength(120) q!: string;
   @IsOptional() @IsString() kind?: string;
-  @IsOptional() @Type(() => Number) @IsInt() limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
 
 // ---- write bodies ----
