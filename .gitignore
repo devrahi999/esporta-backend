@@ -131,3 +131,5 @@ Desktop.ini
 *.bak
 *.backup
 *.orig
+.vercel
+.env*
