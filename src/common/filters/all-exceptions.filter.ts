@@ -26,10 +26,28 @@ const STATUS_TO_CODE: Record<number, string> = {
 };
 
 /**
+ * Client-facing text for any 5xx. Provider and database failures carry raw
+ * internals in their message (`permission denied for table posts`,
+ * `R2 DELETE failed (403)`, PostgREST sentences, SQLSTATEs, RPC names). None of
+ * that is a client contract, so the wire never carries it and the log keeps it.
+ */
+const GENERIC_5XX_MESSAGE = 'Something went wrong.';
+
+/**
  * Turns any thrown value into the standard error envelope (plan §30) and logs
  * failures once, here — this is the single catch-all, so errors from guards
- * (which run before interceptors) are covered too. 5xx messages are made generic
- * so internal details never leak to clients; the real message is logged.
+ * (which run before interceptors) are covered too. 5xx messages AND details are
+ * made generic so internal details never leak to clients; the real message is
+ * logged.
+ *
+ * The details scrub is not a nicety: `AppException`s raised from
+ * `mapPostgrestError` carry the raw PostgREST sentence, SQLSTATE, hint and the
+ * failing RPC name in `details` (deliberately, so admin consoles can phrase a
+ * 4xx refusal precisely), and providers raise raw upstream messages. Forwarding
+ * those on a 5xx handed a client the schema, the function name and the
+ * provider's status code. 4xx keeps both message and details — business rules
+ * and the semantic admin hints (`owner_only`, `rate_limited`,
+ * `superadmin_locked`, …) travel on 4xx only.
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -78,9 +96,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
   } {
     if (exception instanceof AppException) {
       const body = exception.getResponse() as ApiErrorBody;
+      const status = exception.getStatus();
+      // 5xx: generic message, no details. 4xx: verbatim — the business rule and
+      // its semantic hint are the client contract (see the class doc).
+      const scrubbed = status >= 500;
       return {
-        status: exception.getStatus(),
-        error: { code: body.code, message: body.message, details: body.details },
+        status,
+        error: {
+          code: body.code,
+          message: scrubbed ? GENERIC_5XX_MESSAGE : body.message,
+          details: scrubbed ? undefined : body.details,
+        },
         logMessage: body.message,
         stack: exception.stack,
       };
@@ -94,11 +120,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status === HttpStatus.BAD_REQUEST && details
           ? ErrorCode.VALIDATION_ERROR
           : STATUS_TO_CODE[status] ?? ErrorCode.INTERNAL_ERROR;
-      // 5xx get a generic client message; everything else is safe to surface.
-      const clientMessage = status >= 500 ? 'Something went wrong.' : message;
+      // 5xx get a generic client message (and no details); everything else is
+      // safe to surface.
+      const clientMessage = status >= 500 ? GENERIC_5XX_MESSAGE : message;
       return {
         status,
-        error: { code, message: clientMessage, details },
+        error: { code, message: clientMessage, details: status >= 500 ? undefined : details },
         logMessage: message,
         stack: exception.stack,
       };
